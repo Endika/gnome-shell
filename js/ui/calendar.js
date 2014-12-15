@@ -88,23 +88,6 @@ function _formatEventTime(event, clockFormat, periodBegin, periodEnd) {
     return ret;
 }
 
-function _getCalendarWeekForDate(date) {
-    // Based on the algorithms found here:
-    // http://en.wikipedia.org/wiki/Talk:ISO_week_date
-    let midnightDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-    // Need to get Monday to be 1 ... Sunday to be 7
-    let dayOfWeek = 1 + ((midnightDate.getDay() + 6) % 7);
-    let nearestThursday = new Date(midnightDate.getFullYear(), midnightDate.getMonth(),
-                                   midnightDate.getDate() + (4 - dayOfWeek));
-
-    let jan1st = new Date(nearestThursday.getFullYear(), 0, 1);
-    let diffDate = nearestThursday - jan1st;
-    let dayNumber = Math.floor(Math.abs(diffDate) / MSECS_IN_DAY);
-    let weekNumber = Math.floor(dayNumber / 7) + 1;
-
-    return weekNumber;
-}
-
 function _getCalendarDayAbbreviation(dayNumber) {
     let abbreviations = [
         /* Translators: Calendar grid abbreviation for Sunday.
@@ -250,11 +233,24 @@ const DBusEventSource = new Lang.Class({
         this._initialized = false;
         this._dbusProxy = new CalendarServer();
         this._dbusProxy.init_async(GLib.PRIORITY_DEFAULT, null, Lang.bind(this, function(object, result) {
+            let loaded = false;
+
             try {
                 this._dbusProxy.init_finish(result);
+                loaded = true;
             } catch(e) {
-                log('Error loading calendars: ' + e.message);
-                return;
+                if (e.matches(Gio.DBusError, Gio.DBusError.TIMED_OUT)) {
+                    // Ignore timeouts and install signals as normal, because with high
+                    // probability the service will appear later on, and we will get a
+                    // NameOwnerChanged which will finish loading
+                    //
+                    // (But still _initialized to false, because the proxy does not know
+                    // about the HasCalendars property and would cause an exception trying
+                    // to read it)
+                } else {
+                    log('Error loading calendars: ' + e.message);
+                    return;
+                }
             }
 
             this._dbusProxy.connectSignal('Changed', Lang.bind(this, this._onChanged));
@@ -270,9 +266,11 @@ const DBusEventSource = new Lang.Class({
                 this.emit('notify::has-calendars');
             }));
 
-            this._initialized = true;
-            this.emit('notify::has-calendars');
-            this._onNameAppeared();
+            this._initialized = loaded;
+            if (loaded) {
+                this.emit('notify::has-calendars');
+                this._onNameAppeared();
+            }
         }));
     },
 
@@ -294,6 +292,7 @@ const DBusEventSource = new Lang.Class({
     },
 
     _onNameAppeared: function(owner) {
+        this._initialized = true;
         this._resetCache();
         this._loadEvents(true);
     },
@@ -669,7 +668,7 @@ const Calendar = new Lang.Class({
             this._buttons.push(button);
 
             if (this._useWeekdate && iter.getDay() == 4) {
-                let label = new St.Label({ text: _getCalendarWeekForDate(iter).toString(),
+                let label = new St.Label({ text: iter.toLocaleFormat('%V'),
                                            style_class: 'calendar-day-base calendar-week-number'});
                 layout.attach(label, rtl ? 7 : 0, row, 1, 1);
             }

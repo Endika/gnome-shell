@@ -812,12 +812,27 @@ ensure_request (StTextureCache        *cache,
   return had_pending;
 }
 
-static ClutterActor *
-load_gicon_with_colors (StTextureCache    *cache,
-                        GIcon             *icon,
-                        gint               size,
-                        gint               scale,
-                        StIconColors      *colors)
+/**
+ * st_texture_cache_load_gicon:
+ * @cache: The texture cache instance
+ * @theme_node: (nullable): The #StThemeNode to use for colors, or NULL
+ *                            if the icon must not be recolored
+ * @icon: the #GIcon to load
+ * @size: Size of themed
+ * @scale: Scale factor of display
+ *
+ * This method returns a new #ClutterActor for a given #GIcon. If the
+ * icon isn't loaded already, the texture will be filled
+ * asynchronously.
+ *
+ * Return Value: (transfer none): A new #ClutterActor for the icon, or %NULL if not found
+ */
+ClutterActor *
+st_texture_cache_load_gicon (StTextureCache    *cache,
+                             StThemeNode       *theme_node,
+                             GIcon             *icon,
+                             gint               size,
+                             gint               scale)
 {
   AsyncTextureLoadData *request;
   ClutterActor *texture;
@@ -826,12 +841,25 @@ load_gicon_with_colors (StTextureCache    *cache,
   GtkIconTheme *theme;
   GtkIconInfo *info;
   StTextureCachePolicy policy;
+  StIconColors *colors = NULL;
+  StIconStyle icon_style = ST_ICON_STYLE_REQUESTED;
   GtkIconLookupFlags lookup_flags;
+
+  if (theme_node)
+    {
+      colors = st_theme_node_get_icon_colors (theme_node);
+      icon_style = st_theme_node_get_icon_style (theme_node);
+    }
 
   /* Do theme lookups in the main thread to avoid thread-unsafety */
   theme = cache->priv->icon_theme;
 
   lookup_flags = GTK_ICON_LOOKUP_USE_BUILTIN;
+
+  if (icon_style == ST_ICON_STYLE_REGULAR)
+    lookup_flags |= GTK_ICON_LOOKUP_FORCE_REGULAR;
+  else if (icon_style == ST_ICON_STYLE_SYMBOLIC)
+    lookup_flags |= GTK_ICON_LOOKUP_FORCE_SYMBOLIC;
 
   if (clutter_get_default_text_direction () == CLUTTER_TEXT_DIRECTION_RTL)
     lookup_flags |= GTK_ICON_LOOKUP_DIR_RTL;
@@ -852,8 +880,8 @@ load_gicon_with_colors (StTextureCache    *cache,
   if (colors)
     {
       /* This raises some doubts about the practice of using string keys */
-      key = g_strdup_printf (CACHE_PREFIX_ICON "%s,size=%d,scale=%d,colors=%2x%2x%2x%2x,%2x%2x%2x%2x,%2x%2x%2x%2x,%2x%2x%2x%2x",
-                             gicon_string, size, scale,
+      key = g_strdup_printf (CACHE_PREFIX_ICON "%s,size=%d,scale=%d,style=%d,colors=%2x%2x%2x%2x,%2x%2x%2x%2x,%2x%2x%2x%2x,%2x%2x%2x%2x",
+                             gicon_string, size, scale, icon_style,
                              colors->foreground.red, colors->foreground.blue, colors->foreground.green, colors->foreground.alpha,
                              colors->warning.red, colors->warning.blue, colors->warning.green, colors->warning.alpha,
                              colors->error.red, colors->error.blue, colors->error.green, colors->error.alpha,
@@ -861,8 +889,8 @@ load_gicon_with_colors (StTextureCache    *cache,
     }
   else
     {
-      key = g_strdup_printf (CACHE_PREFIX_ICON "%s,size=%d,scale=%d",
-                             gicon_string, size, scale);
+      key = g_strdup_printf (CACHE_PREFIX_ICON "%s,size=%d,scale=%d,style=%d",
+                             gicon_string, size, scale, icon_style);
     }
   g_free (gicon_string);
 
@@ -892,31 +920,6 @@ load_gicon_with_colors (StTextureCache    *cache,
     }
 
   return CLUTTER_ACTOR (texture);
-}
-
-/**
- * st_texture_cache_load_gicon:
- * @cache: The texture cache instance
- * @theme_node: (nullable): The #StThemeNode to use for colors, or NULL
- *                            if the icon must not be recolored
- * @icon: the #GIcon to load
- * @size: Size of themed
- * @scale: Scale factor of display
- *
- * This method returns a new #ClutterActor for a given #GIcon. If the
- * icon isn't loaded already, the texture will be filled
- * asynchronously.
- *
- * Return Value: (transfer none): A new #ClutterActor for the icon, or %NULL if not found
- */
-ClutterActor *
-st_texture_cache_load_gicon (StTextureCache    *cache,
-                             StThemeNode       *theme_node,
-                             GIcon             *icon,
-                             gint               size,
-                             gint               scale)
-{
-  return load_gicon_with_colors (cache, icon, size, scale, theme_node ? st_theme_node_get_icon_colors (theme_node) : NULL);
 }
 
 static ClutterActor *

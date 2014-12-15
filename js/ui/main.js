@@ -4,6 +4,7 @@ const Clutter = imports.gi.Clutter;
 const Gdk = imports.gi.Gdk;
 const Gio = imports.gi.Gio;
 const GLib = imports.gi.GLib;
+const Gtk = imports.gi.Gtk;
 const Lang = imports.lang;
 const Mainloop = imports.mainloop;
 const Meta = imports.gi.Meta;
@@ -75,7 +76,8 @@ let _cssStylesheet = null;
 let _a11ySettings = null;
 
 function _sessionUpdated() {
-    _loadDefaultStylesheet();
+    if (sessionMode.isPrimary)
+        _loadDefaultStylesheet();
 
     wm.setCustomKeybindingHandler('panel-main-menu',
                                   Shell.KeyBindingMode.NORMAL |
@@ -109,6 +111,8 @@ function start() {
 
     sessionMode = new SessionMode.SessionMode();
     sessionMode.connect('updated', _sessionUpdated);
+    Gtk.Settings.get_default().connect('notify::gtk-theme-name',
+                                       _loadDefaultStylesheet);
     _initializeUI();
 
     shellDBusService = new ShellDBus.GnomeShell();
@@ -225,24 +229,36 @@ function _initializeUI() {
     });
 }
 
-function _getDefaultStylesheet() {
+function _getStylesheet(name) {
     let stylesheet;
 
-    stylesheet = Gio.File.new_for_uri('resource:///org/gnome/shell/theme/' + sessionMode.stylesheetName);
+    stylesheet = Gio.File.new_for_uri('resource:///org/gnome/shell/theme/' + name);
     if (stylesheet.query_exists(null))
         return stylesheet;
 
-    stylesheet = Gio.File.new_for_path(global.datadir + '/theme/' + sessionMode.stylesheetName);
+    stylesheet = Gio.File.new_for_path(global.datadir + '/theme/' + name);
     if (stylesheet.query_exists(null))
         return stylesheet;
 
     return null;
 }
 
-function _loadDefaultStylesheet() {
-    if (!sessionMode.isPrimary)
-        return;
+function _getDefaultStylesheet() {
+    let stylesheet = null;
+    let name = sessionMode.stylesheetName;
 
+    // Look for a high-contrast variant first when using GTK+'s HighContrast
+    // theme
+    if (Gtk.Settings.get_default().gtk_theme_name == 'HighContrast')
+        stylesheet = _getStylesheet(name.replace('.css', '-high-contrast.css'));
+
+    if (stylesheet == null)
+        stylesheet = _getStylesheet(sessionMode.stylesheetName);
+
+    return stylesheet;
+}
+
+function _loadDefaultStylesheet() {
     let stylesheet = _getDefaultStylesheet();
     if (_defaultCssStylesheet && _defaultCssStylesheet.equal(stylesheet))
         return;
@@ -256,7 +272,7 @@ function _loadDefaultStylesheet() {
  *
  * Get the theme CSS file that the shell will load
  *
- * Returns: A file path that contains the theme CSS,
+ * Returns: A #GFile that contains the theme CSS,
  *          null if using the default
  */
 function getThemeStylesheet() {
@@ -271,7 +287,7 @@ function getThemeStylesheet() {
  * Set the theme CSS file that the shell will load
  */
 function setThemeStylesheet(cssStylesheet) {
-    _cssStylesheet = Gio.File.new_for_path(cssStylesheet);
+    _cssStylesheet = cssStylesheet ? Gio.File.new_for_path(cssStylesheet) : null;
 }
 
 /**

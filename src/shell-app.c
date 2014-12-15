@@ -16,6 +16,7 @@
 #include "shell-window-tracker-private.h"
 #include "st.h"
 #include "gtkactionmuxer.h"
+#include "org-gtk-application.h"
 
 #ifdef HAVE_SYSTEMD
 #include <systemd/sd-journal.h>
@@ -47,14 +48,16 @@ typedef struct {
   /* Whether or not we need to resort the windows; this is done on demand */
   guint window_sort_stale : 1;
 
-  /* DBus property notification subscription */
-  guint properties_changed_id : 1;
-
   /* See GApplication documentation */
   GDBusMenuModel   *remote_menu;
   GtkActionMuxer   *muxer;
   char             *unique_bus_name;
   GDBusConnection  *session;
+
+  /* GDBus Proxy for getting application busy state */
+  ShellOrgGtkApplication *application_proxy;
+  GCancellable           *cancellable;
+
 } ShellAppRunningState;
 
 /**
@@ -89,6 +92,7 @@ struct _ShellApp
 enum {
   PROP_0,
   PROP_STATE,
+  PROP_BUSY,
   PROP_ID,
   PROP_DBUS_ID,
   PROP_ACTION_GROUP,
@@ -119,6 +123,9 @@ shell_app_get_property (GObject    *gobject,
     {
     case PROP_STATE:
       g_value_set_enum (value, app->state);
+      break;
+    case PROP_BUSY:
+      g_value_set_boolean (value, shell_app_get_busy (app));
       break;
     case PROP_ID:
       g_value_set_string (value, shell_app_get_id (app));
@@ -202,27 +209,23 @@ shell_app_create_icon_texture (ShellApp   *app,
                                int         size)
 {
   GIcon *icon;
-  gint scale;
   ClutterActor *ret;
-  ShellGlobal *global;
-  StThemeContext *context;
-
-  global = shell_global_get ();
-  context = st_theme_context_get_for_stage (shell_global_get_stage (global));
-  g_object_get (context, "scale-factor", &scale, NULL);
-  ret = NULL;
 
   if (app->info == NULL)
     return window_backed_app_get_icon (app, size);
 
+  ret = st_icon_new ();
+  st_icon_set_icon_size (ST_ICON (ret), size);
+
   icon = g_app_info_get_icon (G_APP_INFO (app->info));
   if (icon != NULL)
-    ret = st_texture_cache_load_gicon (st_texture_cache_get_default (), NULL, icon, size, scale);
-
-  if (ret == NULL)
+    {
+      st_icon_set_gicon (ST_ICON (ret), icon);
+    }
+  else
     {
       icon = g_themed_icon_new ("application-x-executable");
-      ret = st_texture_cache_load_gicon (st_texture_cache_get_default (), NULL, icon, size, scale);
+      st_icon_set_gicon (ST_ICON (ret), icon);
       g_object_unref (icon);
     }
 
@@ -234,6 +237,7 @@ typedef struct {
   int size;
   int scale;
   ClutterTextDirection direction;
+  StThemeNode *theme_node;
 } CreateFadedIconData;
 
 static CoglHandle
@@ -261,19 +265,28 @@ shell_app_create_faded_icon_cpu (StTextureCache *cache,
   guint8 *pixels;
   GIcon *icon;
   GtkIconInfo *info;
+  GtkIconLookupFlags lookup_flags;
+  StIconStyle icon_style;
 
   app = data->app;
   size = data->size;
   scale = data->scale;
+  icon_style = st_theme_node_get_icon_style (data->theme_node);
 
   info = NULL;
+
+  lookup_flags = GTK_ICON_LOOKUP_FORCE_SIZE;
+  if (icon_style == ST_ICON_STYLE_REGULAR)
+    lookup_flags |= GTK_ICON_LOOKUP_FORCE_REGULAR;
+  else if (icon_style == ST_ICON_STYLE_SYMBOLIC)
+    lookup_flags |= GTK_ICON_LOOKUP_FORCE_SYMBOLIC;
 
   icon = g_app_info_get_icon (G_APP_INFO (app->info));
   if (icon != NULL)
     {
       info = gtk_icon_theme_lookup_by_gicon_for_scale (gtk_icon_theme_get_default (),
                                                        icon, size, scale,
-                                                       GTK_ICON_LOOKUP_FORCE_SIZE);
+                                                       lookup_flags);
     }
 
   if (info == NULL)
@@ -281,7 +294,7 @@ shell_app_create_faded_icon_cpu (StTextureCache *cache,
       icon = g_themed_icon_new ("application-x-executable");
       info = gtk_icon_theme_lookup_by_gicon_for_scale (gtk_icon_theme_get_default (),
                                                        icon, size, scale,
-                                                       GTK_ICON_LOOKUP_FORCE_SIZE);
+                                                       lookup_flags);
       g_object_unref (icon);
     }
 
@@ -388,6 +401,7 @@ shell_app_get_faded_icon (ShellApp *app, int size, ClutterTextDirection directio
   data.size = size;
   data.scale = scale;
   data.direction = direction;
+  data.theme_node = st_theme_context_get_root_node (context);
   texture = st_texture_cache_load (st_texture_cache_get_default (),
                                    cache_key,
                                    ST_TEXTURE_CACHE_POLICY_FOREVER,
@@ -675,7 +689,6 @@ shell_app_activate_full (ShellApp      *app,
       case SHELL_APP_STATE_STARTING:
         break;
       case SHELL_APP_STATE_RUNNING:
-      case SHELL_APP_STATE_BUSY:
         shell_app_activate_window (app, NULL, timestamp);
         break;
     }
@@ -1057,38 +1070,55 @@ shell_app_on_ws_switch (MetaScreen         *screen,
   g_signal_emit (app, shell_app_signals[WINDOWS_CHANGED], 0);
 }
 
+gboolean
+shell_app_get_busy (ShellApp *app)
+{
+  if (app->running_state != NULL &&
+      app->running_state->application_proxy != NULL &&
+      shell_org_gtk_application_get_busy (app->running_state->application_proxy))
+    return TRUE;
+
+  return FALSE;
+}
+
 static void
-application_properties_changed (GDBusConnection *connection,
-                                const gchar     *sender_name,
-                                const gchar     *object_path,
-                                const gchar     *interface_name,
-                                const gchar     *signal_name,
-                                GVariant        *parameters,
-                                gpointer         user_data)
+busy_changed_cb (GObject    *object,
+                 GParamSpec *pspec,
+                 gpointer    user_data)
 {
   ShellApp *app = user_data;
-  GVariant *changed_properties;
-  gboolean busy = FALSE;
-  const gchar *interface_name_for_signal;
 
-  g_variant_get (parameters,
-                 "(&s@a{sv}as)",
-                 &interface_name_for_signal,
-                 &changed_properties,
-                 NULL);
+  g_assert (SHELL_IS_APP (app));
 
-  if (g_strcmp0 (interface_name_for_signal, "org.gtk.Application") != 0)
-    return;
+  g_object_notify (G_OBJECT (app), "busy");
+}
 
-  g_variant_lookup (changed_properties, "Busy", "b", &busy);
+static void
+get_application_proxy (GObject      *source,
+                       GAsyncResult *result,
+                       gpointer      user_data)
+{
+  ShellApp *app = user_data;
+  ShellOrgGtkApplication *proxy;
 
-  if (busy)
-    shell_app_state_transition (app, SHELL_APP_STATE_BUSY);
-  else
-    shell_app_state_transition (app, SHELL_APP_STATE_RUNNING);
+  g_assert (SHELL_IS_APP (app));
 
-  if (changed_properties != NULL)
-    g_variant_unref (changed_properties);
+  proxy = shell_org_gtk_application_proxy_new_finish (result, NULL);
+  if (proxy != NULL)
+    {
+      app->running_state->application_proxy = proxy;
+      g_signal_connect (proxy,
+                        "notify::busy",
+                        G_CALLBACK (busy_changed_cb),
+                        app);
+      if (shell_org_gtk_application_get_busy (proxy))
+        g_object_notify (G_OBJECT (app), "busy");
+    }
+
+  if (app->running_state != NULL)
+    g_clear_object (&app->running_state->cancellable);
+
+  g_object_unref (app);
 }
 
 static void
@@ -1098,7 +1128,8 @@ shell_app_ensure_busy_watch (ShellApp *app)
   MetaWindow *window;
   const gchar *object_path;
 
-  if (running_state->properties_changed_id != 0)
+  if (running_state->application_proxy != NULL ||
+      running_state->cancellable != NULL)
     return;
 
   if (running_state->unique_bus_name == NULL)
@@ -1110,15 +1141,16 @@ shell_app_ensure_busy_watch (ShellApp *app)
   if (object_path == NULL)
     return;
 
-  running_state->properties_changed_id =
-    g_dbus_connection_signal_subscribe (running_state->session,
-                                        running_state->unique_bus_name,
-                                        "org.freedesktop.DBus.Properties",
-                                        "PropertiesChanged",
-                                        object_path,
-                                        "org.gtk.Application",
-                                        G_DBUS_SIGNAL_FLAGS_NONE,
-                                        application_properties_changed, app, NULL);
+  running_state->cancellable = g_cancellable_new();
+  /* Take a reference to app to make sure it isn't finalized before
+     get_application_proxy runs */
+  shell_org_gtk_application_proxy_new (running_state->session,
+                                       G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START,
+                                       running_state->unique_bus_name,
+                                       object_path,
+                                       running_state->cancellable,
+                                       get_application_proxy,
+                                       g_object_ref (app));
 }
 
 void
@@ -1461,8 +1493,13 @@ unref_running_state (ShellAppRunningState *state)
   screen = shell_global_get_screen (shell_global_get ());
   g_signal_handler_disconnect (screen, state->workspace_switch_id);
 
-  if (state->properties_changed_id != 0)
-    g_dbus_connection_signal_unsubscribe (state->session, state->properties_changed_id);
+  g_clear_object (&state->application_proxy);
+
+  if (state->cancellable != NULL)
+    {
+      g_cancellable_cancel (state->cancellable);
+      g_clear_object (&state->cancellable);
+    }
 
   g_clear_object (&state->remote_menu);
   g_clear_object (&state->muxer);
@@ -1554,6 +1591,19 @@ shell_app_class_init(ShellAppClass *klass)
                                                       SHELL_TYPE_APP_STATE,
                                                       SHELL_APP_STATE_STOPPED,
                                                       G_PARAM_READABLE));
+
+  /**
+   * ShellApp:busy:
+   *
+   * Whether the application has marked itself as busy.
+   */
+  g_object_class_install_property (gobject_class,
+                                   PROP_BUSY,
+                                   g_param_spec_boolean ("busy",
+                                                         "Busy",
+                                                         "Busy state",
+                                                         FALSE,
+                                                         G_PARAM_READABLE));
 
   /**
    * ShellApp:id:
