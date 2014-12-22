@@ -26,6 +26,7 @@ const Gtk = imports.gi.Gtk;
 const Lang = imports.lang;
 const Mainloop = imports.mainloop;
 const Meta = imports.gi.Meta;
+const Pango = imports.gi.Pango;
 const Shell = imports.gi.Shell;
 const Signals = imports.signals;
 const St = imports.gi.St;
@@ -364,12 +365,12 @@ const LoginDialog = new Lang.Class({
     Name: 'LoginDialog',
 
     _init: function(parentActor) {
-        this.actor = new St.Widget({ accessible_role: Atk.Role.WINDOW,
-                                     layout_manager: new Clutter.BinLayout(),
-                                     style_class: 'login-dialog',
-                                     visible: false });
+        this.actor = new Shell.GenericContainer({ style_class: 'login-dialog',
+                                                  visible: false });
+        this.actor.get_accessible().set_role(Atk.Role.WINDOW);
 
         this.actor.add_constraint(new Layout.MonitorConstraint({ primary: true }));
+        this.actor.connect('allocate', Lang.bind(this, this._onAllocate));
         this.actor.connect('destroy', Lang.bind(this, this._onDestroy));
         parentActor.add_child(this.actor);
 
@@ -405,16 +406,9 @@ const LoginDialog = new Lang.Class({
         this._userSelectionBox = new St.BoxLayout({ style_class: 'login-dialog-user-selection-box',
                                                     x_align: Clutter.ActorAlign.CENTER,
                                                     y_align: Clutter.ActorAlign.CENTER,
-                                                    x_expand: true,
-                                                    y_expand: true,
                                                     vertical: true,
                                                     visible: false });
         this.actor.add_child(this._userSelectionBox);
-
-        this._bannerLabel = new St.Label({ style_class: 'login-dialog-banner',
-                                           text: '' });
-        this._userSelectionBox.add(this._bannerLabel);
-        this._updateBanner();
 
         this._userList = new UserList();
         this._userSelectionBox.add(this._userList.actor,
@@ -450,11 +444,25 @@ const LoginDialog = new Lang.Class({
                                      x_align: St.Align.START,
                                      x_fill: true });
 
+        this._bannerView = new St.ScrollView({ style_class: 'login-dialog-banner-view',
+                                               opacity: 0,
+                                               vscrollbar_policy: Gtk.PolicyType.AUTOMATIC,
+                                               hscrollbar_policy: Gtk.PolicyType.NEVER });
+        this.actor.add_child(this._bannerView);
+
+        let bannerBox = new St.BoxLayout({ vertical: true });
+
+        this._bannerView.add_actor(bannerBox);
+        this._bannerLabel = new St.Label({ style_class: 'login-dialog-banner',
+                                           text: '' });
+        this._bannerLabel.clutter_text.line_wrap = true;
+        this._bannerLabel.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+        bannerBox.add_child(this._bannerLabel);
+        this._updateBanner();
+
         this._logoBin = new St.Widget({ style_class: 'login-dialog-logo-bin',
                                         x_align: Clutter.ActorAlign.CENTER,
-                                        y_align: Clutter.ActorAlign.END,
-                                        x_expand: true,
-                                        y_expand: true });
+                                        y_align: Clutter.ActorAlign.END });
         this.actor.add_child(this._logoBin);
         this._updateLogo();
 
@@ -483,6 +491,180 @@ const LoginDialog = new Lang.Class({
         // focus later
         this._startupCompleteId = Main.layoutManager.connect('startup-complete',
                                                              Lang.bind(this, this._updateDisableUserList));
+    },
+
+    _getBannerAllocation: function (dialogBox) {
+        let actorBox = new Clutter.ActorBox();
+
+        let [minWidth, minHeight, natWidth, natHeight] = this._bannerView.get_preferred_size();
+        let centerX = dialogBox.x1 + (dialogBox.x2 - dialogBox.x1) / 2;
+
+        actorBox.x1 = centerX - natWidth / 2;
+        actorBox.y1 = dialogBox.y1 + Main.layoutManager.panelBox.height;
+        actorBox.x2 = actorBox.x1 + natWidth;
+        actorBox.y2 = actorBox.y1 + natHeight;
+
+        return actorBox;
+    },
+
+    _getLogoBinAllocation: function (dialogBox) {
+        let actorBox = new Clutter.ActorBox();
+
+        let [minWidth, minHeight, natWidth, natHeight] = this._logoBin.get_preferred_size();
+        let centerX = dialogBox.x1 + (dialogBox.x2 - dialogBox.x1) / 2;
+
+        actorBox.x1 = centerX - natWidth / 2;
+        actorBox.y1 = dialogBox.y2 - natHeight;
+        actorBox.x2 = actorBox.x1 + natWidth;
+        actorBox.y2 = actorBox.y1 + natHeight;
+
+        return actorBox;
+    },
+
+    _getCenterActorAllocation: function (dialogBox, actor) {
+        let actorBox = new Clutter.ActorBox();
+
+        let [minWidth, minHeight, natWidth, natHeight] = actor.get_preferred_size();
+        let centerX = dialogBox.x1 + (dialogBox.x2 - dialogBox.x1) / 2;
+        let centerY = dialogBox.y1 + (dialogBox.y2 - dialogBox.y1) / 2;
+
+        actorBox.x1 = centerX - natWidth / 2;
+        actorBox.y1 = centerY - natHeight / 2;
+        actorBox.x2 = actorBox.x1 + natWidth;
+        actorBox.y2 = actorBox.y1 + natHeight;
+
+        return actorBox;
+    },
+
+    _onAllocate: function (actor, dialogBox, flags) {
+        let dialogWidth = dialogBox.x2 - dialogBox.x1;
+        let dialogHeight = dialogBox.y2 - dialogBox.y1;
+
+        // First find out what space the children require
+        let bannerAllocation = null;
+        let bannerHeight = 0;
+        let bannerWidth = 0;
+        if (this._bannerView.visible) {
+            bannerAllocation = this._getBannerAllocation(dialogBox, this._bannerView);
+            bannerHeight = bannerAllocation.y2 - bannerAllocation.y1;
+            bannerWidth = bannerAllocation.x2 - bannerAllocation.x1;
+        }
+
+        let authPromptAllocation = null;
+        let authPromptHeight = 0;
+        let authPromptWidth = 0;
+        if (this._authPrompt.actor.visible) {
+            authPromptAllocation = this._getCenterActorAllocation(dialogBox, this._authPrompt.actor);
+            authPromptHeight = authPromptAllocation.y2 - authPromptAllocation.y1;
+            authPromptWidth = authPromptAllocation.x2 - authPromptAllocation.x1;
+        }
+
+        let userSelectionAllocation = null;
+        let userSelectionHeight = 0;
+        if (this._userSelectionBox.visible) {
+            userSelectionAllocation = this._getCenterActorAllocation(dialogBox, this._userSelectionBox);
+            userSelectionHeight = userSelectionAllocation.y2 - userSelectionAllocation.y1;
+        }
+
+        let logoAllocation = null;
+        let logoHeight = 0;
+        if (this._logoBin.visible) {
+            logoAllocation = this._getLogoBinAllocation(dialogBox);
+            logoHeight = logoAllocation.y2 - logoAllocation.y1;
+        }
+
+        // Then figure out if we're overly constrained and need to
+        // try a different layout, or if we have what extra space we
+        // can hand out
+        if (bannerAllocation) {
+            let leftOverYSpace = dialogHeight - bannerHeight - authPromptHeight - logoHeight;
+
+            if (leftOverYSpace > 0) {
+                 // First figure out how much left over space is up top
+                 let leftOverTopSpace = leftOverYSpace / 2;
+
+                 // Then, shift the banner into the middle of that extra space
+                 let yShift = leftOverTopSpace / 2;
+
+                 bannerAllocation.y1 += yShift;
+                 bannerAllocation.y2 += yShift;
+            } else {
+                 // Then figure out how much space there would be if we switched to a
+                 // wide layout with banner on one side and authprompt on the other.
+                 let leftOverXSpace = dialogWidth - authPromptWidth;
+
+                 // In a wide view, half of the available space goes to the banner,
+                 // and the other half goes to the margins.
+                 let wideBannerWidth = leftOverXSpace / 2;
+                 let wideSpacing  = leftOverXSpace - wideBannerWidth;
+
+                 // If we do go with a wide layout, we need there to be at least enough
+                 // space for the banner and the auth prompt to be the same width,
+                 // so it doesn't look unbalanced.
+                 if (authPromptWidth > 0 && wideBannerWidth > authPromptWidth) {
+                     let centerX = dialogBox.x1 + dialogWidth / 2;
+                     let centerY = dialogBox.y1 + dialogHeight / 2;
+
+                     // A small portion of the spacing goes down the center of the
+                     // screen to help delimit the two columns of the wide view
+                     let centerGap = wideSpacing / 8;
+
+                     // place the banner along the left edge of the center margin
+                     bannerAllocation.x2 = centerX - centerGap / 2;
+                     bannerAllocation.x1 = bannerAllocation.x2 - wideBannerWidth;
+
+                     // figure out how tall it would like to be and try to accomodate
+                     // but don't let it get too close to the logo
+                     let [wideMinHeight, wideBannerHeight] = this._bannerView.get_preferred_height(wideBannerWidth);
+
+                     let maxWideHeight = dialogHeight - 3 * logoHeight;
+                     wideBannerHeight = Math.min(maxWideHeight, wideBannerHeight);
+                     bannerAllocation.y1 = centerY - wideBannerHeight / 2;
+                     bannerAllocation.y2 = bannerAllocation.y1 + wideBannerHeight;
+
+                     // place the auth prompt along the right edge of the center margin
+                     authPromptAllocation.x1 = centerX + centerGap / 2;
+                     authPromptAllocation.x2 = authPromptAllocation.x1 + authPromptWidth;
+                 } else {
+                     // If we aren't going to do a wide view, then we need to limit
+                     // the height of the banner so it will present scrollbars
+
+                     // First figure out how much space there is without the banner
+                     leftOverYSpace += bannerHeight;
+
+                     // Then figure out how much of that space is up top
+                     let availableTopSpace = leftOverYSpace / 2;
+
+                     // Then give all of that space to the banner
+                     bannerAllocation.y2 = bannerAllocation.y1 + availableTopSpace;
+                 }
+            }
+        } else if (userSelectionAllocation) {
+            // Grow the user list to fill the space
+            let leftOverYSpace = dialogHeight - userSelectionHeight - logoHeight;
+
+            if (leftOverYSpace > 0) {
+                let topExpansion = leftOverYSpace / 2;
+                let bottomExpansion = topExpansion;
+
+                userSelectionAllocation.y1 -= topExpansion;
+                userSelectionAllocation.y2 += bottomExpansion;
+            }
+        }
+
+        // Finally hand out the allocations
+        if (bannerAllocation) {
+            this._bannerView.allocate(bannerAllocation, flags);
+        }
+
+        if (authPromptAllocation)
+            this._authPrompt.actor.allocate(authPromptAllocation, flags);
+
+        if (userSelectionAllocation)
+            this._userSelectionBox.allocate(userSelectionAllocation, flags);
+
+        if (logoAllocation)
+            this._logoBin.allocate(logoAllocation, flags);
     },
 
     _ensureUserListLoaded: function() {
@@ -535,6 +717,18 @@ const LoginDialog = new Lang.Class({
         } else {
             this._bannerLabel.hide();
         }
+    },
+
+    _fadeInBannerView: function() {
+        Tweener.addTween(this._bannerView,
+                         { opacity: 255,
+                           time: _FADE_ANIMATION_TIME,
+                           transition: 'easeOutQuad' });
+    },
+
+    _hideBannerView: function() {
+        Tweener.removeTweens(this._bannerView);
+        this._bannerView.opacity = 0;
     },
 
     _updateLogoTexture: function(cache, file) {
@@ -604,6 +798,7 @@ const LoginDialog = new Lang.Class({
                          { opacity: 255,
                            time: _FADE_ANIMATION_TIME,
                            transition: 'easeOutQuad' });
+        this._fadeInBannerView();
     },
 
     _showRealmLoginHint: function(realmManager, hint) {
@@ -860,6 +1055,7 @@ const LoginDialog = new Lang.Class({
     _showUserList: function() {
         this._ensureUserListLoaded();
         this._authPrompt.hide();
+        this._hideBannerView();
         this._sessionMenuButton.close();
         this._setUserListExpanded(true);
         this._notListedButton.show();
@@ -959,7 +1155,7 @@ const LoginDialog = new Lang.Class({
         this.actor.show();
         this.actor.opacity = 0;
 
-        Main.pushModal(this.actor, { keybindingMode: Shell.KeyBindingMode.LOGIN_SCREEN });
+        Main.pushModal(this.actor, { actionMode: Shell.ActionMode.LOGIN_SCREEN });
 
         Tweener.addTween(this.actor,
                          { opacity: 255,

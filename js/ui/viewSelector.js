@@ -65,7 +65,8 @@ const ShowOverviewAction = new Lang.Class({
     },
 
     vfunc_gesture_prepare : function(action, actor) {
-        return this.get_n_current_points() == this.get_n_touch_points();
+        return Main.actionMode == Shell.ActionMode.NORMAL &&
+               this.get_n_current_points() == this.get_n_touch_points();
     },
 
     _getBoundingRect : function(motion) {
@@ -202,20 +203,21 @@ const ViewSelector = new Lang.Class({
         Main.wm.addKeybinding('toggle-application-view',
                               new Gio.Settings({ schema_id: SHELL_KEYBINDINGS_SCHEMA }),
                               Meta.KeyBindingFlags.NONE,
-                              Shell.KeyBindingMode.NORMAL |
-                              Shell.KeyBindingMode.OVERVIEW,
+                              Shell.ActionMode.NORMAL |
+                              Shell.ActionMode.OVERVIEW,
                               Lang.bind(this, this._toggleAppsPage));
 
         Main.wm.addKeybinding('toggle-overview',
                               new Gio.Settings({ schema_id: SHELL_KEYBINDINGS_SCHEMA }),
                               Meta.KeyBindingFlags.NONE,
-                              Shell.KeyBindingMode.NORMAL |
-                              Shell.KeyBindingMode.OVERVIEW,
+                              Shell.ActionMode.NORMAL |
+                              Shell.ActionMode.OVERVIEW,
                               Lang.bind(Main.overview, Main.overview.toggle));
 
         let gesture;
 
-        gesture = new EdgeDragAction.EdgeDragAction(St.Side.LEFT);
+        gesture = new EdgeDragAction.EdgeDragAction(St.Side.LEFT,
+                                                    Shell.ActionMode.NORMAL);
         gesture.connect('activated', Lang.bind(this, function() {
             if (Main.overview.visible)
                 Main.overview.hide();
