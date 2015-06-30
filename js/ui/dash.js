@@ -1,6 +1,7 @@
 // -*- mode: js; js-indent-level: 4; indent-tabs-mode: nil -*-
 
 const Clutter = imports.gi.Clutter;
+const Gio = imports.gi.Gio;
 const GLib = imports.gi.GLib;
 const Signals = imports.signals;
 const Lang = imports.lang;
@@ -269,6 +270,9 @@ const ShowAppsIcon = new Lang.Class({
         if (app == null)
             return false;
 
+        if (!global.settings.is_writable('favorite-apps'))
+            return false;
+
         let id = app.get_id();
         let isFavorite = AppFavorites.getAppFavorites().isFavorite(id);
         return isFavorite;
@@ -513,10 +517,13 @@ const Dash = new Lang.Class({
             this._syncLabel(item, appIcon);
         }));
 
-        Main.overview.connect('hiding', Lang.bind(this, function() {
+        let id = Main.overview.connect('hiding', Lang.bind(this, function() {
             this._labelShowing = false;
             item.hideLabel();
         }));
+        item.child.connect('destroy', function() {
+            Main.overview.disconnect(id);
+        });
 
         if (appIcon) {
             appIcon.connect('sync-tooltip', Lang.bind(this, function() {
@@ -529,14 +536,17 @@ const Dash = new Lang.Class({
         let appIcon = new AppDisplay.AppIcon(app,
                                              { setSizeManually: true,
                                                showLabel: false });
-        appIcon._draggable.connect('drag-begin',
-                                   Lang.bind(this, function() {
-                                       appIcon.actor.opacity = 50;
-                                   }));
-        appIcon._draggable.connect('drag-end',
-                                   Lang.bind(this, function() {
-                                       appIcon.actor.opacity = 255;
-                                   }));
+        if (appIcon._draggable) {
+            appIcon._draggable.connect('drag-begin',
+                                       Lang.bind(this, function() {
+                                           appIcon.actor.opacity = 50;
+                                       }));
+            appIcon._draggable.connect('drag-end',
+                                       Lang.bind(this, function() {
+                                           appIcon.actor.opacity = 255;
+                                       }));
+        }
+
         appIcon.connect('menu-state-changed',
                         Lang.bind(this, function(appIcon, opened) {
                             this._itemMenuStateChanged(item, opened);
@@ -850,6 +860,9 @@ const Dash = new Lang.Class({
         if (app == null || app.is_window_backed())
             return DND.DragMotionResult.NO_DROP;
 
+        if (!global.settings.is_writable('favorite-apps'))
+            return DND.DragMotionResult.NO_DROP;
+
         let favorites = AppFavorites.getAppFavorites().getFavorites();
         let numFavorites = favorites.length;
 
@@ -925,6 +938,9 @@ const Dash = new Lang.Class({
         if (app == null || app.is_window_backed()) {
             return false;
         }
+
+        if (!global.settings.is_writable('favorite-apps'))
+            return false;
 
         let id = app.get_id();
 

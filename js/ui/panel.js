@@ -26,6 +26,7 @@ const Main = imports.ui.main;
 const Tweener = imports.ui.tweener;
 
 const PANEL_ICON_SIZE = 24;
+const APP_MENU_ICON_MARGIN = 2;
 
 const BUTTON_DND_ACTIVATION_TIMEOUT = 250;
 
@@ -74,90 +75,6 @@ function _unpremultiply(color) {
                                blue: blue, alpha: color.alpha });
 };
 
-const TextShadower = new Lang.Class({
-    Name: 'TextShadower',
-
-    _init: function() {
-        this.actor = new Shell.GenericContainer();
-        this.actor.connect('get-preferred-width', Lang.bind(this, this._getPreferredWidth));
-        this.actor.connect('get-preferred-height', Lang.bind(this, this._getPreferredHeight));
-        this.actor.connect('allocate', Lang.bind(this, this._allocate));
-
-        this._label = new St.Label();
-        this.actor.add_actor(this._label);
-        for (let i = 0; i < 4; i++) {
-            let actor = new St.Label({ style_class: 'label-shadow' });
-            actor.clutter_text.ellipsize = Pango.EllipsizeMode.END;
-            this.actor.add_actor(actor);
-        }
-        this._label.raise_top();
-    },
-
-    setText: function(text) {
-        let children = this.actor.get_children();
-        for (let i = 0; i < children.length; i++)
-            children[i].set_text(text);
-    },
-
-    _getPreferredWidth: function(actor, forHeight, alloc) {
-        let [minWidth, natWidth] = this._label.get_preferred_width(forHeight);
-        alloc.min_size = minWidth + 2;
-        alloc.natural_size = natWidth + 2;
-    },
-
-    _getPreferredHeight: function(actor, forWidth, alloc) {
-        let [minHeight, natHeight] = this._label.get_preferred_height(forWidth);
-        alloc.min_size = minHeight + 2;
-        alloc.natural_size = natHeight + 2;
-    },
-
-    _allocate: function(actor, box, flags) {
-        let children = this.actor.get_children();
-
-        let availWidth = box.x2 - box.x1;
-        let availHeight = box.y2 - box.y1;
-
-        let [minChildWidth, minChildHeight, natChildWidth, natChildHeight] =
-            this._label.get_preferred_size();
-
-        let childWidth = Math.min(natChildWidth, availWidth - 2);
-        let childHeight = Math.min(natChildHeight, availHeight - 2);
-
-        for (let i = 0; i < children.length; i++) {
-            let child = children[i];
-            let childBox = new Clutter.ActorBox();
-            // The order of the labels here is arbitrary, except
-            // we know the "real" label is at the end because Clutter.Actor
-            // sorts by Z order
-            switch (i) {
-                case 0: // top
-                    childBox.x1 = 1;
-                    childBox.y1 = 0;
-                    break;
-                case 1: // right
-                    childBox.x1 = 2;
-                    childBox.y1 = 1;
-                    break;
-                case 2: // bottom
-                    childBox.x1 = 1;
-                    childBox.y1 = 2;
-                    break;
-                case 3: // left
-                    childBox.x1 = 0;
-                    childBox.y1 = 1;
-                    break;
-                case 4: // center
-                    childBox.x1 = 1;
-                    childBox.y1 = 1;
-                    break;
-            }
-            childBox.x2 = childBox.x1 + childWidth;
-            childBox.y2 = childBox.y1 + childHeight;
-            child.allocate(childBox, flags);
-        }
-    }
-});
-
 /**
  * AppMenuButton:
  *
@@ -190,33 +107,21 @@ const AppMenuButton = new Lang.Class({
         this.actor.bind_property("reactive", this.actor, "can-focus", 0);
         this.actor.reactive = false;
 
-        this._container = new Shell.GenericContainer();
+        this._container = new St.BoxLayout({ style_class: 'panel-status-menu-box' });
         bin.set_child(this._container);
-        this._container.connect('get-preferred-width', Lang.bind(this, this._getContentPreferredWidth));
-        this._container.connect('get-preferred-height', Lang.bind(this, this._getContentPreferredHeight));
-        this._container.connect('allocate', Lang.bind(this, this._contentAllocate));
 
         let textureCache = St.TextureCache.get_default();
         textureCache.connect('icon-theme-changed',
                              Lang.bind(this, this._onIconThemeChanged));
 
-        this._iconBox = new Shell.Slicer({ name: 'appMenuIcon' });
-        this._iconBox.connect('style-changed',
-                              Lang.bind(this, this._onIconBoxStyleChanged));
-        this._iconBox.connect('notify::allocation',
-                              Lang.bind(this, this._updateIconBoxClip));
+        this._iconBox = new St.Bin({ style_class: 'app-menu-icon' });
         this._container.add_actor(this._iconBox);
 
-        this._hbox = new St.BoxLayout({ style_class: 'panel-status-menu-box' });
-        this._container.add_actor(this._hbox);
-
-        this._label = new TextShadower();
-        this._label.actor.y_align = Clutter.ActorAlign.CENTER;
-        this._hbox.add_actor(this._label.actor);
+        this._label = new St.Label({ y_expand: true,
+                                     y_align: Clutter.ActorAlign.CENTER });
+        this._container.add_actor(this._label);
         this._arrow = PopupMenu.arrowIcon(St.Side.BOTTOM);
-        this._hbox.add_actor(this._arrow);
-
-        this._iconBottomClip = 0;
+        this._container.add_actor(this._arrow);
 
         this._visible = !Main.overview.visible;
         if (!this._visible)
@@ -278,21 +183,15 @@ const AppMenuButton = new Lang.Class({
             return;
         this._spinnerIcon = icon;
         this._spinner = new Animation.AnimatedIcon(this._spinnerIcon, PANEL_ICON_SIZE);
-        this._hbox.add_actor(this._spinner.actor);
+        this._container.add_actor(this._spinner.actor);
         this._spinner.actor.hide();
-    },
-
-    _onIconBoxStyleChanged: function() {
-        let node = this._iconBox.get_theme_node();
-        this._iconBottomClip = node.get_length('app-icon-bottom-clip');
-        this._updateIconBoxClip();
     },
 
     _syncIcon: function() {
         if (!this._targetApp)
             return;
 
-        let icon = this._targetApp.get_faded_icon(2 * PANEL_ICON_SIZE, this._iconBox.text_direction);
+        let icon = this._targetApp.create_icon_texture(PANEL_ICON_SIZE - APP_MENU_ICON_MARGIN);
         this._iconBox.set_child(icon);
     },
 
@@ -301,16 +200,6 @@ const AppMenuButton = new Lang.Class({
             return;
 
         this._syncIcon();
-    },
-
-    _updateIconBoxClip: function() {
-        let allocation = this._iconBox.allocation;
-        if (this._iconBottomClip > 0)
-            this._iconBox.set_clip(0, 0,
-                                   allocation.x2 - allocation.x1,
-                                   allocation.y2 - allocation.y1 - this._iconBottomClip);
-        else
-            this._iconBox.remove_clip();
     },
 
     stopAnimation: function() {
@@ -343,64 +232,6 @@ const AppMenuButton = new Lang.Class({
 
         this._spinner.play();
         this._spinner.actor.show();
-    },
-
-    _getContentPreferredWidth: function(actor, forHeight, alloc) {
-        let [minSize, naturalSize] = this._iconBox.get_preferred_width(forHeight);
-        alloc.min_size = minSize;
-        alloc.natural_size = naturalSize;
-        [minSize, naturalSize] = this._hbox.get_preferred_width(forHeight);
-        alloc.min_size = alloc.min_size + Math.max(0, minSize - Math.floor(alloc.min_size / 2));
-        alloc.natural_size = alloc.natural_size + Math.max(0, naturalSize - Math.floor(alloc.natural_size / 2));
-    },
-
-    _getContentPreferredHeight: function(actor, forWidth, alloc) {
-        let [minSize, naturalSize] = this._iconBox.get_preferred_height(forWidth);
-        alloc.min_size = minSize;
-        alloc.natural_size = naturalSize;
-        [minSize, naturalSize] = this._hbox.get_preferred_height(forWidth);
-        if (minSize > alloc.min_size)
-            alloc.min_size = minSize;
-        if (naturalSize > alloc.natural_size)
-            alloc.natural_size = naturalSize;
-    },
-
-    _contentAllocate: function(actor, box, flags) {
-        let allocWidth = box.x2 - box.x1;
-        let allocHeight = box.y2 - box.y1;
-        let childBox = new Clutter.ActorBox();
-
-        let [minWidth, minHeight, naturalWidth, naturalHeight] = this._iconBox.get_preferred_size();
-
-        let direction = this.actor.get_text_direction();
-
-        let yPadding = Math.floor(Math.max(0, allocHeight - naturalHeight) / 2);
-        childBox.y1 = yPadding;
-        childBox.y2 = childBox.y1 + Math.min(naturalHeight, allocHeight);
-        if (direction == Clutter.TextDirection.LTR) {
-            childBox.x1 = 0;
-            childBox.x2 = childBox.x1 + Math.min(naturalWidth, allocWidth);
-        } else {
-            childBox.x1 = Math.max(0, allocWidth - naturalWidth);
-            childBox.x2 = allocWidth;
-        }
-        this._iconBox.allocate(childBox, flags);
-
-        let iconWidth = childBox.x2 - childBox.x1;
-
-        [minWidth, naturalWidth] = this._hbox.get_preferred_width(-1);
-
-        childBox.y1 = 0;
-        childBox.y2 = allocHeight;
-
-        if (direction == Clutter.TextDirection.LTR) {
-            childBox.x1 = Math.floor(iconWidth / 2);
-            childBox.x2 = Math.min(childBox.x1 + naturalWidth, allocWidth);
-        } else {
-            childBox.x2 = allocWidth - Math.floor(iconWidth / 2);
-            childBox.x1 = Math.max(0, childBox.x2 - naturalWidth);
-        }
-        this._hbox.allocate(childBox, flags);
     },
 
     _onAppStateChanged: function(appSys, app) {
@@ -469,7 +300,7 @@ const AppMenuButton = new Lang.Class({
                 this._appMenuNotifyId = this._targetApp.connect('notify::menu', Lang.bind(this, this._sync));
                 this._actionGroupNotifyId = this._targetApp.connect('notify::action-group', Lang.bind(this, this._sync));
                 this._busyNotifyId = this._targetApp.connect('notify::busy', Lang.bind(this, this._sync));
-                this._label.setText(this._targetApp.get_name());
+                this._label.set_text(this._targetApp.get_name());
                 this.actor.set_accessible_name(this._targetApp.get_name());
             }
         }
@@ -893,7 +724,7 @@ const Panel = new Lang.Class({
 
         this.statusArea = {};
 
-        this.menuManager = new PopupMenu.PopupMenuManager(this, { actionMode: Shell.ActionMode.TOPBAR_POPUP });
+        this.menuManager = new PopupMenu.PopupMenuManager(this);
 
         this._leftBox = new St.BoxLayout({ name: 'panelLeft' });
         this.actor.add_actor(this._leftBox);
@@ -921,7 +752,7 @@ const Panel = new Lang.Class({
         }));
 
         Main.layoutManager.panelBox.add(this.actor);
-        Main.ctrlAltTabManager.addGroup(this.actor, _("Top Bar"), 'emblem-system-symbolic',
+        Main.ctrlAltTabManager.addGroup(this.actor, _("Top Bar"), 'focus-top-bar-symbolic',
                                         { sortGroup: CtrlAltTab.SortGroup.TOP });
 
         Main.sessionMode.connect('updated', Lang.bind(this, this._updatePanel));
@@ -1047,9 +878,8 @@ const Panel = new Lang.Class({
         return Clutter.EVENT_STOP;
     },
 
-    toggleAppMenu: function() {
-        let indicator = this.statusArea.appMenu;
-        if (!indicator) // appMenu not supported by current session mode
+    _toggleMenu: function(indicator) {
+        if (!indicator) // menu not supported by current session mode
             return;
 
         let menu = indicator.menu;
@@ -1059,6 +889,26 @@ const Panel = new Lang.Class({
         menu.toggle();
         if (menu.isOpen)
             menu.actor.navigate_focus(null, Gtk.DirectionType.TAB_FORWARD, false);
+    },
+
+    toggleAppMenu: function() {
+        this._toggleMenu(this.statusArea.appMenu);
+    },
+
+    toggleCalendar: function() {
+        this._toggleMenu(this.statusArea.dateMenu);
+    },
+
+    closeCalendar: function() {
+        let indicator = this.statusArea.dateMenu;
+        if (!indicator) // calendar not supported by current session mode
+            return;
+
+        let menu = indicator.menu;
+        if (!indicator.actor.reactive)
+            return;
+
+        menu.close();
     },
 
     set boxOpacity(value) {
@@ -1082,6 +932,14 @@ const Panel = new Lang.Class({
         this._updateBox(panel.left, this._leftBox);
         this._updateBox(panel.center, this._centerBox);
         this._updateBox(panel.right, this._rightBox);
+
+        if (panel.left.indexOf('dateMenu') != -1)
+            Main.messageTray.bannerAlignment = Clutter.ActorAlign.START;
+        else if (panel.right.indexOf('dateMenu') != -1)
+            Main.messageTray.bannerAlignment = Clutter.ActorAlign.END;
+        // Default to center if there is no dateMenu
+        else
+            Main.messageTray.bannerAlignment = Clutter.ActorAlign.CENTER;
 
         if (this._sessionStyle)
             this._removeStyleClassName(this._sessionStyle);
@@ -1145,6 +1003,7 @@ const Panel = new Lang.Class({
         if (parent)
             parent.remove_actor(container);
 
+
         box.insert_child_at_index(container, position);
         if (indicator.menu)
             this.menuManager.addMenu(indicator.menu);
@@ -1154,6 +1013,8 @@ const Panel = new Lang.Class({
             emitter.disconnect(destroyId);
             container.destroy();
         }));
+        indicator.connect('menu-set', Lang.bind(this, this._onMenuSet));
+        this._onMenuSet(indicator);
     },
 
     addToStatusArea: function(role, indicator, position, box) {
@@ -1185,5 +1046,24 @@ const Panel = new Lang.Class({
         this.actor.remove_style_class_name(className);
         this._rightCorner.actor.remove_style_class_name(className);
         this._leftCorner.actor.remove_style_class_name(className);
+    },
+
+    _onMenuSet: function(indicator) {
+        if (!indicator.menu || indicator.menu._openChangedId > 0)
+            return;
+
+        indicator.menu._openChangedId = indicator.menu.connect('open-state-changed',
+            Lang.bind(this, function(menu, isOpen) {
+                let boxAlignment;
+                if (this._leftBox.contains(indicator.container))
+                    boxAlignment = Clutter.ActorAlign.START;
+                else if (this._centerBox.contains(indicator.container))
+                    boxAlignment = Clutter.ActorAlign.CENTER;
+                else if (this._rightBox.contains(indicator.container))
+                    boxAlignment = Clutter.ActorAlign.END;
+
+                if (boxAlignment == Main.messageTray.bannerAlignment)
+                    Main.messageTray.bannerBlocked = isOpen;
+            }));
     }
 });

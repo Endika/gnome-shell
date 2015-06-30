@@ -27,8 +27,8 @@ const CtrlAltTabManager = new Lang.Class({
     _init: function() {
         this._items = [];
         this.addGroup(global.window_group, _("Windows"),
-                      'emblem-documents-symbolic', { sortGroup: SortGroup.TOP,
-                                                     focusCallback: Lang.bind(this, this._focusWindows) });
+                      'focus-windows-symbolic', { sortGroup: SortGroup.TOP,
+                                                  focusCallback: Lang.bind(this, this._focusWindows) });
     },
 
     addGroup: function(root, name, icon, params) {
@@ -100,7 +100,7 @@ const CtrlAltTabManager = new Lang.Class({
                     if (app)
                         icon = app.create_icon_texture(POPUP_APPICON_SIZE);
                     else
-                        icon = textureCache.bind_pixbuf_property(windows[i], 'icon');
+                        icon = textureCache.bind_cairo_surface_property(windows[i], 'icon');
                 }
 
                 items.push({ name: windows[i].title,

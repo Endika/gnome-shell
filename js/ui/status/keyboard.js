@@ -2,6 +2,7 @@
 
 const Clutter = imports.gi.Clutter;
 const Gio = imports.gi.Gio;
+const GLib = imports.gi.GLib;
 const Lang = imports.lang;
 const Meta = imports.gi.Meta;
 const Shell = imports.gi.Shell;
@@ -17,10 +18,6 @@ const PopupMenu = imports.ui.popupMenu;
 const PanelMenu = imports.ui.panelMenu;
 const SwitcherPopup = imports.ui.switcherPopup;
 const Util = imports.misc.util;
-
-const DESKTOP_INPUT_SOURCES_SCHEMA = 'org.gnome.desktop.input-sources';
-const KEY_INPUT_SOURCES = 'sources';
-const KEY_KEYBOARD_OPTIONS = 'xkb-options';
 
 const INPUT_SOURCE_TYPE_XKB = 'xkb';
 const INPUT_SOURCE_TYPE_IBUS = 'ibus';
@@ -142,6 +139,149 @@ const InputSourceSwitcher = new Lang.Class({
     }
 });
 
+const InputSourceSettings = new Lang.Class({
+    Name: 'InputSourceSettings',
+    Abstract: true,
+
+    _emitInputSourcesChanged: function() {
+        this.emit('input-sources-changed');
+    },
+
+    _emitKeyboardOptionsChanged: function() {
+        this.emit('keyboard-options-changed');
+    },
+
+    _emitPerWindowChanged: function() {
+        this.emit('per-window-changed');
+    },
+
+    get inputSources() {
+        return [];
+    },
+
+    get keyboardOptions() {
+        return [];
+    },
+
+    get perWindow() {
+        return false;
+    }
+});
+Signals.addSignalMethods(InputSourceSettings.prototype);
+
+const InputSourceSystemSettings = new Lang.Class({
+    Name: 'InputSourceSystemSettings',
+    Extends: InputSourceSettings,
+
+    _BUS_NAME: 'org.freedesktop.locale1',
+    _BUS_PATH: '/org/freedesktop/locale1',
+    _BUS_IFACE: 'org.freedesktop.locale1',
+    _BUS_PROPS_IFACE: 'org.freedesktop.DBus.Properties',
+
+    _init: function() {
+        this._layouts = '';
+        this._variants = '';
+        this._options = '';
+
+        this._reload();
+
+        Gio.DBus.system.signal_subscribe(this._BUS_NAME,
+                                         this._BUS_PROPS_IFACE,
+                                         'PropertiesChanged',
+                                         this._BUS_PATH,
+                                         null,
+                                         Gio.DBusSignalFlags.NONE,
+                                         Lang.bind(this, this._reload));
+    },
+
+    _reload: function() {
+        Gio.DBus.system.call(this._BUS_NAME,
+                             this._BUS_PATH,
+                             this._BUS_PROPS_IFACE,
+                             'GetAll',
+                             new GLib.Variant('(s)', [this._BUS_IFACE]),
+                             null, Gio.DBusCallFlags.NONE, -1, null,
+                             Lang.bind(this, function(conn, result) {
+                                 let props;
+                                 try {
+                                     props = conn.call_finish(result).deep_unpack()[0];
+                                 } catch(e) {
+                                     log('Could not get properties from ' + this._BUS_NAME);
+                                     return;
+                                 }
+                                 let layouts = props['X11Layout'].unpack();
+                                 let variants = props['X11Variant'].unpack();
+                                 let options = props['X11Options'].unpack();
+
+                                 if (layouts != this._layouts ||
+                                     variants != this._variants) {
+                                     this._layouts = layouts;
+                                     this._variants = variants;
+                                     this._emitInputSourcesChanged();
+                                 }
+                                 if (options != this._options) {
+                                     this._options = options;
+                                     this._emitKeyboardOptionsChanged();
+                                 }
+                             }));
+    },
+
+    get inputSources() {
+        let sourcesList = [];
+        let layouts = this._layouts.split(',');
+        let variants = this._variants.split(',');
+
+        for (let i = 0; i < layouts.length && !!layouts[i]; i++) {
+            let id = layouts[i];
+            if (!!variants[i])
+                id += '+' + variants[i];
+            sourcesList.push({ type: INPUT_SOURCE_TYPE_XKB, id: id });
+        }
+        return sourcesList;
+    },
+
+    get keyboardOptions() {
+        return this._options.split(',');
+    }
+});
+
+const InputSourceSessionSettings = new Lang.Class({
+    Name: 'InputSourceSessionSettings',
+    Extends: InputSourceSettings,
+
+    _DESKTOP_INPUT_SOURCES_SCHEMA: 'org.gnome.desktop.input-sources',
+    _KEY_INPUT_SOURCES: 'sources',
+    _KEY_KEYBOARD_OPTIONS: 'xkb-options',
+    _KEY_PER_WINDOW: 'per-window',
+
+    _init: function() {
+        this._settings = new Gio.Settings({ schema_id: this._DESKTOP_INPUT_SOURCES_SCHEMA });
+        this._settings.connect('changed::' + this._KEY_INPUT_SOURCES, Lang.bind(this, this._emitInputSourcesChanged));
+        this._settings.connect('changed::' + this._KEY_KEYBOARD_OPTIONS, Lang.bind(this, this._emitKeyboardOptionsChanged));
+        this._settings.connect('changed::' + this._KEY_PER_WINDOW, Lang.bind(this, this._emitPerWindowChanged));
+    },
+
+    get inputSources() {
+        let sourcesList = [];
+        let sources = this._settings.get_value(this._KEY_INPUT_SOURCES);
+        let nSources = sources.n_children();
+
+        for (let i = 0; i < nSources; i++) {
+            let [type, id] = sources.get_child_value(i).deep_unpack();
+            sourcesList.push({ type: type, id: id });
+        }
+        return sourcesList;
+    },
+
+    get keyboardOptions() {
+        return this._settings.get_strv(this._KEY_KEYBOARD_OPTIONS);
+    },
+
+    get perWindow() {
+        return this._settings.get_boolean(this._KEY_PER_WINDOW);
+    }
+});
+
 const InputSourceManager = new Lang.Class({
     Name: 'InputSourceManager',
 
@@ -159,6 +299,7 @@ const InputSourceManager = new Lang.Class({
         // All valid input sources currently in the gsettings
         // KEY_INPUT_SOURCES list ordered by most recently used
         this._mruSources = [];
+        this._mruSourcesBackup = null;
         this._keybindingAction =
             Main.wm.addKeybinding('switch-input-source',
                                   new Gio.Settings({ schema_id: "org.gnome.desktop.wm.keybindings" }),
@@ -171,9 +312,12 @@ const InputSourceManager = new Lang.Class({
                                   Meta.KeyBindingFlags.IS_REVERSED,
                                   Shell.ActionMode.ALL,
                                   Lang.bind(this, this._switchInputSource));
-        this._settings = new Gio.Settings({ schema_id: DESKTOP_INPUT_SOURCES_SCHEMA });
-        this._settings.connect('changed::' + KEY_INPUT_SOURCES, Lang.bind(this, this._inputSourcesChanged));
-        this._settings.connect('changed::' + KEY_KEYBOARD_OPTIONS, Lang.bind(this, this._keyboardOptionsChanged));
+        if (Main.sessionMode.isGreeter)
+            this._settings = new InputSourceSystemSettings();
+        else
+            this._settings = new InputSourceSessionSettings();
+        this._settings.connect('input-sources-changed', Lang.bind(this, this._inputSourcesChanged));
+        this._settings.connect('keyboard-options-changed', Lang.bind(this, this._keyboardOptionsChanged));
 
         this._xkbInfo = KeyboardManager.getXkbInfo();
         this._keyboardManager = KeyboardManager.getKeyboardManager();
@@ -183,6 +327,7 @@ const InputSourceManager = new Lang.Class({
         this._ibusManager.connect('ready', Lang.bind(this, this._ibusReadyCallback));
         this._ibusManager.connect('properties-registered', Lang.bind(this, this._ibusPropertiesRegistered));
         this._ibusManager.connect('property-updated', Lang.bind(this, this._ibusPropertyUpdated));
+        this._ibusManager.connect('set-content-type', Lang.bind(this, this._ibusSetContentType));
 
         global.display.connect('modifiers-accelerator-activated', Lang.bind(this, this._modifiersSwitcher));
 
@@ -190,12 +335,13 @@ const InputSourceManager = new Lang.Class({
         this._focusWindowNotifyId = 0;
         this._overviewShowingId = 0;
         this._overviewHiddenId = 0;
-        this._settings.connect('changed::per-window', Lang.bind(this, this._sourcesPerWindowChanged));
+        this._settings.connect('per-window-changed', Lang.bind(this, this._sourcesPerWindowChanged));
         this._sourcesPerWindowChanged();
+        this._disableIBus = false;
     },
 
     reload: function() {
-        this._keyboardManager.setKeyboardOptions(this._settings.get_strv(KEY_KEYBOARD_OPTIONS));
+        this._keyboardManager.setKeyboardOptions(this._settings.keyboardOptions);
         this._inputSourcesChanged();
     },
 
@@ -239,8 +385,7 @@ const InputSourceManager = new Lang.Class({
         // effect without considerable work to consolidate the usage
         // of pushModal/popModal and grabHelper. See
         // https://bugzilla.gnome.org/show_bug.cgi?id=695143 .
-        if (Main.actionMode == Shell.ActionMode.MESSAGE_TRAY ||
-            Main.actionMode == Shell.ActionMode.TOPBAR_POPUP) {
+        if (Main.actionMode == Shell.ActionMode.POPUP) {
             this._modifiersSwitcher();
             return;
         }
@@ -251,7 +396,7 @@ const InputSourceManager = new Lang.Class({
     },
 
     _keyboardOptionsChanged: function() {
-        this._keyboardManager.setKeyboardOptions(this._settings.get_strv(KEY_KEYBOARD_OPTIONS));
+        this._keyboardManager.setKeyboardOptions(this._settings.keyboardOptions);
         this._keyboardManager.reapply();
     },
 
@@ -292,8 +437,8 @@ const InputSourceManager = new Lang.Class({
     },
 
     _inputSourcesChanged: function() {
-        let sources = this._settings.get_value(KEY_INPUT_SOURCES);
-        let nSources = sources.n_children();
+        let sources = this._settings.inputSources;
+        let nSources = sources.length;
 
         this._inputSources = {};
         this._ibusSources = {};
@@ -302,13 +447,16 @@ const InputSourceManager = new Lang.Class({
         for (let i = 0; i < nSources; i++) {
             let displayName;
             let shortName;
-            let [type, id] = sources.get_child_value(i).deep_unpack();
+            let type = sources[i].type;
+            let id = sources[i].id;
             let exists = false;
 
             if (type == INPUT_SOURCE_TYPE_XKB) {
                 [exists, displayName, shortName, , ] =
                     this._xkbInfo.get_layout_info(id);
             } else if (type == INPUT_SOURCE_TYPE_IBUS) {
+                if (this._disableIBus)
+                    continue;
                 let engineDesc = this._ibusManager.getEngineDesc(id);
                 if (engineDesc) {
                     let language = IBus.get_language_name(engineDesc.get_language());
@@ -367,6 +515,11 @@ const InputSourceManager = new Lang.Class({
             sourcesList.push(this._inputSources[i]);
 
         this._keyboardManager.setUserLayouts(sourcesList.map(function(x) { return x.xkbId; }));
+
+        if (!this._disableIBus && this._mruSourcesBackup) {
+            this._mruSources = this._mruSourcesBackup;
+            this._mruSourcesBackup = null;
+        }
 
         let mruSources = [];
         for (let i = 0; i < this._mruSources.length; i++) {
@@ -437,14 +590,38 @@ const InputSourceManager = new Lang.Class({
         return false;
     },
 
-    _getNewInputSource: function(current) {
-        for (let i in this._inputSources) {
-            let is = this._inputSources[i];
-            if (is.type == current.type &&
-                is.id == current.id)
-                return is;
+    _ibusSetContentType: function(im, purpose, hints) {
+        if (purpose == IBus.InputPurpose.PASSWORD) {
+            if (Object.keys(this._inputSources).length == Object.keys(this._ibusSources).length)
+                return;
+
+            if (this._disableIBus)
+                return;
+            this._disableIBus = true;
+            this._mruSourcesBackup = this._mruSources.slice();
+        } else {
+            if (!this._disableIBus)
+                return;
+            this._disableIBus = false;
         }
-        return this._currentSource;
+        this.reload();
+    },
+
+    _getNewInputSource: function(current) {
+        let sourceIndexes = Object.keys(this._inputSources);
+        if (sourceIndexes.length == 0)
+            return null;
+
+        if (current) {
+            for (let i in this._inputSources) {
+                let is = this._inputSources[i];
+                if (is.type == current.type &&
+                    is.id == current.id)
+                    return is;
+            }
+        }
+
+        return this._inputSources[sourceIndexes[0]];
     },
 
     _getCurrentWindow: function() {
@@ -459,20 +636,17 @@ const InputSourceManager = new Lang.Class({
         if (!window)
             return;
 
-        if (!window._inputSources) {
-            window._inputSources = this._inputSources;
-            window._currentSource = this._currentSource;
-        } else if (window._inputSources == this._inputSources) {
-            window._currentSource.activate();
-        } else {
+        if (window._inputSources != this._inputSources) {
             window._inputSources = this._inputSources;
             window._currentSource = this._getNewInputSource(window._currentSource);
-            window._currentSource.activate();
         }
+
+        if (window._currentSource)
+            window._currentSource.activate();
     },
 
     _sourcesPerWindowChanged: function() {
-        this._sourcesPerWindow = this._settings.get_boolean('per-window');
+        this._sourcesPerWindow = this._settings.perWindow;
 
         if (this._sourcesPerWindow && this._focusWindowNotifyId == 0) {
             this._focusWindowNotifyId = global.display.connect('notify::focus-window',
@@ -551,7 +725,6 @@ const InputSourceIndicator = new Lang.Class({
         this._hbox.add_child(PopupMenu.arrowIcon(St.Side.BOTTOM));
 
         this.actor.add_child(this._hbox);
-        this.actor.add_style_class_name('panel-status-button');
 
         this._propSeparator = new PopupMenu.PopupSeparatorMenuItem();
         this.menu.addMenuItem(this._propSeparator);

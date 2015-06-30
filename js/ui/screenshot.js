@@ -283,8 +283,8 @@ const SelectArea = new Lang.Class({
     _getGeometry: function() {
         return { x: Math.min(this._startX, this._lastX),
                  y: Math.min(this._startY, this._lastY),
-                 width: Math.abs(this._startX - this._lastX),
-                 height: Math.abs(this._startY - this._lastY) };
+                 width: Math.abs(this._startX - this._lastX) + 1,
+                 height: Math.abs(this._startY - this._lastY) + 1 };
     },
 
     _onMotionEvent: function(actor, event) {
@@ -292,6 +292,8 @@ const SelectArea = new Lang.Class({
             return Clutter.EVENT_PROPAGATE;
 
         [this._lastX, this._lastY] = event.get_coords();
+        this._lastX = Math.floor(this._lastX);
+        this._lastY = Math.floor(this._lastY);
         let geometry = this._getGeometry();
 
         this._rubberband.set_position(geometry.x, geometry.y);
@@ -302,6 +304,8 @@ const SelectArea = new Lang.Class({
 
     _onButtonPress: function(actor, event) {
         [this._startX, this._startY] = event.get_coords();
+        this._startX = Math.floor(this._startX);
+        this._startY = Math.floor(this._startY);
         this._rubberband.set_position(this._startX, this._startY);
 
         return Clutter.EVENT_PROPAGATE;

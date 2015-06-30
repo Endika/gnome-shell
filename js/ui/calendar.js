@@ -1,26 +1,36 @@
 // -*- mode: js; js-indent-level: 4; indent-tabs-mode: nil -*-
 
+const Atk = imports.gi.Atk;
 const Clutter = imports.gi.Clutter;
 const Gio = imports.gi.Gio;
 const GLib = imports.gi.GLib;
+const GObject = imports.gi.GObject;
+const Gtk = imports.gi.Gtk;
 const Lang = imports.lang;
 const St = imports.gi.St;
 const Signals = imports.signals;
 const Pango = imports.gi.Pango;
 const Gettext_gtk30 = imports.gettext.domain('gtk30');
 const Mainloop = imports.mainloop;
+const Meta = imports.gi.Meta;
 const Shell = imports.gi.Shell;
+
+const Main = imports.ui.main;
+const MessageTray = imports.ui.messageTray;
+const Tweener = imports.ui.tweener;
+const Util = imports.misc.util;
 
 const MSECS_IN_DAY = 24 * 60 * 60 * 1000;
 const SHOW_WEEKDATE_KEY = 'show-weekdate';
 const ELLIPSIS_CHAR = '\u2026';
 
+const MESSAGE_ANIMATION_TIME = 0.1;
+
+const DEFAULT_EXPAND_LINES = 6;
+
 // alias to prevent xgettext from picking up strings translated in GTK+
 const gtk30_ = Gettext_gtk30.gettext;
-const NC_ = function(context, str) { return str; };
-
-// in org.gnome.desktop.interface
-const CLOCK_FORMAT_KEY        = 'clock-format';
+const NC_ = function(context, str) { return context + '\u0004' + str; };
 
 function _sameYear(dateA, dateB) {
     return (dateA.getYear() == dateB.getYear());
@@ -32,6 +42,10 @@ function _sameMonth(dateA, dateB) {
 
 function _sameDay(dateA, dateB) {
     return _sameMonth(dateA, dateB) && (dateA.getDate() == dateB.getDate());
+}
+
+function _isToday(date) {
+    return _sameDay(new Date(), date);
 }
 
 function _isWorkDay(date) {
@@ -58,36 +72,6 @@ function _getEndOfDay(date) {
     return ret;
 }
 
-function _formatEventTime(event, clockFormat, periodBegin, periodEnd) {
-    let ret;
-    let allDay = (event.allDay || (event.date <= periodBegin && event.end >= periodEnd));
-    if (allDay) {
-        /* Translators: Shown in calendar event list for all day events
-         * Keep it short, best if you can use less then 10 characters
-         */
-        ret = C_("event list time", "All Day");
-    } else {
-        let date = event.date >= periodBegin ? event.date : event.end;
-        switch (clockFormat) {
-        case '24h':
-            /* Translators: Shown in calendar event list, if 24h format,
-               \u2236 is a ratio character, similar to : */
-            ret = date.toLocaleFormat(C_("event list time", "%H\u2236%M"));
-            break;
-
-        default:
-            /* explicit fall-through */
-        case '12h':
-            /* Translators: Shown in calendar event list, if 12h format,
-               \u2236 is a ratio character, similar to : and \u2009 is
-               a thin space */
-            ret = date.toLocaleFormat(C_("event list time", "%l\u2236%M\u2009%p"));
-            break;
-        }
-    }
-    return ret;
-}
-
 function _getCalendarDayAbbreviation(dayNumber) {
     let abbreviations = [
         /* Translators: Calendar grid abbreviation for Sunday.
@@ -95,54 +79,172 @@ function _getCalendarDayAbbreviation(dayNumber) {
          * NOTE: These grid abbreviations are always shown together
          * and in order, e.g. "S M T W T F S".
          */
-        C_("grid sunday", "S"),
+        NC_("grid sunday", "S"),
         /* Translators: Calendar grid abbreviation for Monday */
-        C_("grid monday", "M"),
+        NC_("grid monday", "M"),
         /* Translators: Calendar grid abbreviation for Tuesday */
-        C_("grid tuesday", "T"),
+        NC_("grid tuesday", "T"),
         /* Translators: Calendar grid abbreviation for Wednesday */
-        C_("grid wednesday", "W"),
+        NC_("grid wednesday", "W"),
         /* Translators: Calendar grid abbreviation for Thursday */
-        C_("grid thursday", "T"),
+        NC_("grid thursday", "T"),
         /* Translators: Calendar grid abbreviation for Friday */
-        C_("grid friday", "F"),
+        NC_("grid friday", "F"),
         /* Translators: Calendar grid abbreviation for Saturday */
-        C_("grid saturday", "S")
+        NC_("grid saturday", "S")
     ];
-    return abbreviations[dayNumber];
+    return Shell.util_translate_time_string(abbreviations[dayNumber]);
 }
 
-function _getEventDayAbbreviation(dayNumber) {
-    let abbreviations = [
-        /* Translators: Event list abbreviation for Sunday.
-         *
-         * NOTE: These list abbreviations are normally not shown together
-         * so they need to be unique (e.g. Tuesday and Thursday cannot
-         * both be 'T').
-         */
-        C_("list sunday", "Su"),
-        /* Translators: Event list abbreviation for Monday */
-        C_("list monday", "M"),
-        /* Translators: Event list abbreviation for Tuesday */
-        C_("list tuesday", "T"),
-        /* Translators: Event list abbreviation for Wednesday */
-        C_("list wednesday", "W"),
-        /* Translators: Event list abbreviation for Thursday */
-        C_("list thursday", "Th"),
-        /* Translators: Event list abbreviation for Friday */
-        C_("list friday", "F"),
-        /* Translators: Event list abbreviation for Saturday */
-        C_("list saturday", "S")
-    ];
-    return abbreviations[dayNumber];
+function _fixMarkup(text, allowMarkup) {
+    if (allowMarkup) {
+        // Support &amp;, &quot;, &apos;, &lt; and &gt;, escape all other
+        // occurrences of '&'.
+        let _text = text.replace(/&(?!amp;|quot;|apos;|lt;|gt;)/g, '&amp;');
+
+        // Support <b>, <i>, and <u>, escape anything else
+        // so it displays as raw markup.
+        _text = _text.replace(/<(?!\/?[biu]>)/g, '&lt;');
+
+        try {
+            Pango.parse_markup(_text, -1, '');
+            return _text;
+        } catch (e) {}
+    }
+
+    // !allowMarkup, or invalid markup
+    return GLib.markup_escape_text(text, -1);
 }
+
+const URLHighlighter = new Lang.Class({
+    Name: 'URLHighlighter',
+
+    _init: function(text, lineWrap, allowMarkup) {
+        if (!text)
+            text = '';
+        this.actor = new St.Label({ reactive: true, style_class: 'url-highlighter',
+                                    x_expand: true, x_align: Clutter.ActorAlign.START });
+        this._linkColor = '#ccccff';
+        this.actor.connect('style-changed', Lang.bind(this, function() {
+            let [hasColor, color] = this.actor.get_theme_node().lookup_color('link-color', false);
+            if (hasColor) {
+                let linkColor = color.to_string().substr(0, 7);
+                if (linkColor != this._linkColor) {
+                    this._linkColor = linkColor;
+                    this._highlightUrls();
+                }
+            }
+        }));
+        this.actor.clutter_text.line_wrap = lineWrap;
+        this.actor.clutter_text.line_wrap_mode = Pango.WrapMode.WORD_CHAR;
+
+        this.setMarkup(text, allowMarkup);
+        this.actor.connect('button-press-event', Lang.bind(this, function(actor, event) {
+            // Don't try to URL highlight when invisible.
+            // The MessageTray doesn't actually hide us, so
+            // we need to check for paint opacities as well.
+            if (!actor.visible || actor.get_paint_opacity() == 0)
+                return Clutter.EVENT_PROPAGATE;
+
+            // Keep Notification.actor from seeing this and taking
+            // a pointer grab, which would block our button-release-event
+            // handler, if an URL is clicked
+            return this._findUrlAtPos(event) != -1;
+        }));
+        this.actor.connect('button-release-event', Lang.bind(this, function (actor, event) {
+            if (!actor.visible || actor.get_paint_opacity() == 0)
+                return Clutter.EVENT_PROPAGATE;
+
+            let urlId = this._findUrlAtPos(event);
+            if (urlId != -1) {
+                let url = this._urls[urlId].url;
+                if (url.indexOf(':') == -1)
+                    url = 'http://' + url;
+
+                Gio.app_info_launch_default_for_uri(url, global.create_app_launch_context(0, -1));
+                return Clutter.EVENT_STOP;
+            }
+            return Clutter.EVENT_PROPAGATE;
+        }));
+        this.actor.connect('motion-event', Lang.bind(this, function(actor, event) {
+            if (!actor.visible || actor.get_paint_opacity() == 0)
+                return Clutter.EVENT_PROPAGATE;
+
+            let urlId = this._findUrlAtPos(event);
+            if (urlId != -1 && !this._cursorChanged) {
+                global.screen.set_cursor(Meta.Cursor.POINTING_HAND);
+                this._cursorChanged = true;
+            } else if (urlId == -1) {
+                global.screen.set_cursor(Meta.Cursor.DEFAULT);
+                this._cursorChanged = false;
+            }
+            return Clutter.EVENT_PROPAGATE;
+        }));
+        this.actor.connect('leave-event', Lang.bind(this, function() {
+            if (!this.actor.visible || this.actor.get_paint_opacity() == 0)
+                return Clutter.EVENT_PROPAGATE;
+
+            if (this._cursorChanged) {
+                this._cursorChanged = false;
+                global.screen.set_cursor(Meta.Cursor.DEFAULT);
+            }
+            return Clutter.EVENT_PROPAGATE;
+        }));
+    },
+
+    setMarkup: function(text, allowMarkup) {
+        text = text ? _fixMarkup(text, allowMarkup) : '';
+        this._text = text;
+
+        this.actor.clutter_text.set_markup(text);
+        /* clutter_text.text contain text without markup */
+        this._urls = Util.findUrls(this.actor.clutter_text.text);
+        this._highlightUrls();
+    },
+
+    _highlightUrls: function() {
+        // text here contain markup
+        let urls = Util.findUrls(this._text);
+        let markup = '';
+        let pos = 0;
+        for (let i = 0; i < urls.length; i++) {
+            let url = urls[i];
+            let str = this._text.substr(pos, url.pos - pos);
+            markup += str + '<span foreground="' + this._linkColor + '"><u>' + url.url + '</u></span>';
+            pos = url.pos + url.url.length;
+        }
+        markup += this._text.substr(pos);
+        this.actor.clutter_text.set_markup(markup);
+    },
+
+    _findUrlAtPos: function(event) {
+        let success;
+        let [x, y] = event.get_coords();
+        [success, x, y] = this.actor.transform_stage_point(x, y);
+        let find_pos = -1;
+        for (let i = 0; i < this.actor.clutter_text.text.length; i++) {
+            let [success, px, py, line_height] = this.actor.clutter_text.position_to_coords(i);
+            if (py > y || py + line_height < y || x < px)
+                continue;
+            find_pos = i;
+        }
+        if (find_pos != -1) {
+            for (let i = 0; i < this._urls.length; i++)
+            if (find_pos >= this._urls[i].pos &&
+                this._urls[i].pos + this._urls[i].url.length > find_pos)
+                return i;
+        }
+        return -1;
+    }
+});
 
 // Abstraction for an appointment/event in a calendar
 
 const CalendarEvent = new Lang.Class({
     Name: 'CalendarEvent',
 
-    _init: function(date, end, summary, allDay) {
+    _init: function(id, date, end, summary, allDay) {
+        this.id = id;
         this.date = date;
         this.end = end;
         this.summary = summary;
@@ -314,9 +416,10 @@ const DBusEventSource = new Lang.Class({
                 let a = appointments[n];
                 let date = new Date(a[4] * 1000);
                 let end = new Date(a[5] * 1000);
+                let id = a[0];
                 let summary = a[1];
                 let allDay = a[3];
-                let event = new CalendarEvent(date, end, summary, allDay);
+                let event = new CalendarEvent(id, date, end, summary, allDay);
                 newEvents.push(event);
             }
             newEvents.sort(function(event1, event2) {
@@ -416,7 +519,7 @@ const Calendar = new Lang.Class({
         this._shouldDateGrabFocus = false;
 
         this.actor = new St.Widget({ style_class: 'calendar',
-                                     layout_manager: new Clutter.GridLayout(),
+                                     layout_manager: new Clutter.TableLayout(),
                                      reactive: true });
 
         this.actor.connect('scroll-event',
@@ -454,9 +557,10 @@ const Calendar = new Lang.Class({
 
         // Top line of the calendar '<| September 2009 |>'
         this._topBox = new St.BoxLayout();
-        layout.attach(this._topBox, 0, 0, offsetCols + 7, 1);
+        layout.pack(this._topBox, 0, 0);
+        layout.set_span(this._topBox, offsetCols + 7, 1);
 
-        this._backButton = new St.Button({ style_class: 'calendar-change-month-back',
+        this._backButton = new St.Button({ style_class: 'calendar-change-month-back pager-button',
                                            accessible_name: _("Previous month"),
                                            can_focus: true });
         this._topBox.add(this._backButton);
@@ -466,7 +570,7 @@ const Calendar = new Lang.Class({
                                          can_focus: true });
         this._topBox.add(this._monthLabel, { expand: true, x_fill: false, x_align: St.Align.MIDDLE });
 
-        this._forwardButton = new St.Button({ style_class: 'calendar-change-month-forward',
+        this._forwardButton = new St.Button({ style_class: 'calendar-change-month-forward pager-button',
                                               accessible_name: _("Next month"),
                                               can_focus: true });
         this._topBox.add(this._forwardButton);
@@ -485,13 +589,15 @@ const Calendar = new Lang.Class({
             // and we want, ideally, a single character for e.g. S M T W T F S
             let customDayAbbrev = _getCalendarDayAbbreviation(iter.getDay());
             let label = new St.Label({ style_class: 'calendar-day-base calendar-day-heading',
-                                       text: customDayAbbrev });
+                                       text: customDayAbbrev,
+                                       can_focus: true });
+            label.accessible_name = iter.toLocaleFormat('%A');
             let col;
             if (this.actor.get_text_direction() == Clutter.TextDirection.RTL)
                 col = 6 - (7 + iter.getDay() - this._weekStart) % 7;
             else
                 col = offsetCols + (7 + iter.getDay() - this._weekStart) % 7;
-            layout.attach(label, col, 1, 1, 1);
+            layout.pack(label, col, 1);
             iter.setTime(iter.getTime() + MSECS_IN_DAY);
         }
 
@@ -601,6 +707,7 @@ const Calendar = new Lang.Class({
         beginDate.setHours(12);
 
         this._calendarBegin = new Date(beginDate);
+        this._markedAsToday = now;
 
         let year = beginDate.getYear();
 
@@ -663,14 +770,17 @@ const Calendar = new Lang.Class({
                 col = 6 - (7 + iter.getDay() - this._weekStart) % 7;
             else
                 col = offsetCols + (7 + iter.getDay() - this._weekStart) % 7;
-            layout.attach(button, col, row, 1, 1);
+            layout.pack(button, col, row);
 
             this._buttons.push(button);
 
             if (this._useWeekdate && iter.getDay() == 4) {
                 let label = new St.Label({ text: iter.toLocaleFormat('%V'),
-                                           style_class: 'calendar-day-base calendar-week-number'});
-                layout.attach(label, rtl ? 7 : 0, row, 1, 1);
+                                           style_class: 'calendar-day-base calendar-week-number',
+                                           can_focus: true });
+                let weekFormat = Shell.util_translate_time_string(N_("Week %V"));
+                label.accessible_name = iter.toLocaleFormat(weekFormat);
+                layout.pack(label, rtl ? 7 : 0, row);
             }
 
             iter.setTime(iter.getTime() + MSECS_IN_DAY);
@@ -692,7 +802,7 @@ const Calendar = new Lang.Class({
         else
             this._monthLabel.text = this._selectedDate.toLocaleFormat(this._headerFormat);
 
-        if (!this._calendarBegin || !_sameMonth(this._selectedDate, this._calendarBegin))
+        if (!this._calendarBegin || !_sameMonth(this._selectedDate, this._calendarBegin) || !_sameDay(now, this._markedAsToday))
             this._rebuildCalendar();
 
         this._buttons.forEach(Lang.bind(this, function(button) {
@@ -706,119 +816,710 @@ const Calendar = new Lang.Class({
         }));
     }
 });
-
 Signals.addSignalMethods(Calendar.prototype);
 
-const EventsList = new Lang.Class({
-    Name: 'EventsList',
+const ScaleLayout = new Lang.Class({
+    Name: 'ScaleLayout',
+    Extends: Clutter.BinLayout,
+
+    _connectContainer: function(container) {
+        if (this._container == container)
+            return;
+
+        if (this._container)
+            for (let id of this._signals)
+                this._container.disconnect(id);
+
+        this._container = container;
+        this._signals = [];
+
+        if (this._container)
+            for (let signal of ['notify::scale-x', 'notify::scale-y']) {
+                let id = this._container.connect(signal, Lang.bind(this,
+                    function() {
+                        this.layout_changed();
+                    }));
+                this._signals.push(id);
+            }
+    },
+
+    vfunc_get_preferred_width: function(container, forHeight) {
+        this._connectContainer(container);
+
+        let [min, nat] = this.parent(container, forHeight);
+        return [Math.floor(min * container.scale_x),
+                Math.floor(nat * container.scale_x)];
+    },
+
+    vfunc_get_preferred_height: function(container, forWidth) {
+        this._connectContainer(container);
+
+        let [min, nat] = this.parent(container, forWidth);
+        return [Math.floor(min * container.scale_y),
+                Math.floor(nat * container.scale_y)];
+    }
+});
+
+const LabelExpanderLayout = new Lang.Class({
+    Name: 'LabelExpanderLayout',
+    Extends: Clutter.LayoutManager,
+    Properties: { 'expansion': GObject.ParamSpec.double('expansion',
+                                                        'Expansion',
+                                                        'Expansion of the layout, between 0 (collapsed) ' +
+                                                        'and 1 (fully expanded',
+                                                         GObject.ParamFlags.READABLE | GObject.ParamFlags.WRITABLE,
+                                                         0, 1, 0)},
+
+    _init: function(params) {
+        this._expansion = 0;
+        this._expandLines = DEFAULT_EXPAND_LINES;
+
+        this.parent(params);
+    },
+
+    get expansion() {
+        return this._expansion;
+    },
+
+    set expansion(v) {
+        if (v == this._expansion)
+            return;
+        this._expansion = v;
+        this.notify('expansion');
+
+        let visibleIndex = this._expansion > 0 ? 1 : 0;
+        for (let i = 0; this._container && i < this._container.get_n_children(); i++)
+            this._container.get_child_at_index(i).visible = (i == visibleIndex);
+
+        this.layout_changed();
+    },
+
+    set expandLines(v) {
+        if (v == this._expandLines)
+            return;
+        this._expandLines = v;
+        if (this._expansion > 0)
+            this.layout_changed();
+    },
+
+    vfunc_set_container: function(container) {
+        this._container = container;
+    },
+
+    vfunc_get_preferred_width: function(container, forHeight) {
+        let [min, nat] = [0, 0];
+
+        for (let i = 0; i < container.get_n_children(); i++) {
+            if (i > 1)
+                break; // we support one unexpanded + one expanded child
+
+            let child = container.get_child_at_index(i);
+            let [childMin, childNat] = child.get_preferred_width(forHeight);
+            [min, nat] = [Math.max(min, childMin), Math.max(nat, childNat)];
+        }
+
+        return [min, nat];
+    },
+
+    vfunc_get_preferred_height: function(container, forWidth) {
+        let [min, nat] = [0, 0];
+
+        let children = container.get_children();
+        if (children[0])
+            [min, nat] = children[0].get_preferred_height(forWidth);
+
+        if (children[1]) {
+            let [min2, nat2] = children[1].get_preferred_height(forWidth);
+            let [expMin, expNat] = [Math.min(min2, min * this._expandLines),
+                                    Math.min(nat2, nat * this._expandLines)];
+            [min, nat] = [min + this._expansion * (expMin - min),
+                          nat + this._expansion * (expNat - nat)];
+        }
+
+        return [min, nat];
+    },
+
+    vfunc_allocate: function(container, box, flags) {
+        for (let i = 0; i < container.get_n_children(); i++) {
+            let child = container.get_child_at_index(i);
+
+            if (child.visible)
+                child.allocate(box, flags);
+        }
+
+    }
+});
+
+const Message = new Lang.Class({
+    Name: 'Message',
+
+    _init: function(title, body) {
+        this.expanded = false;
+
+        this.actor = new St.Button({ style_class: 'message',
+                                     accessible_role: Atk.Role.NOTIFICATION,
+                                     can_focus: true,
+                                     x_expand: true, x_fill: true });
+        this.actor.connect('key-press-event',
+                           Lang.bind(this, this._onKeyPressed));
+
+        let vbox = new St.BoxLayout({ vertical: true });
+        this.actor.set_child(vbox);
+
+        let hbox = new St.BoxLayout();
+        vbox.add_actor(hbox);
+
+        this._actionBin = new St.Widget({ layout_manager: new ScaleLayout(),
+                                          visible: false });
+        vbox.add_actor(this._actionBin);
+
+        this._iconBin = new St.Bin({ style_class: 'message-icon-bin',
+                                     y_expand: true,
+                                     visible: false });
+        this._iconBin.set_y_align(Clutter.ActorAlign.START);
+        hbox.add_actor(this._iconBin);
+
+        let contentBox = new St.BoxLayout({ style_class: 'message-content',
+                                            vertical: true, x_expand: true });
+        hbox.add_actor(contentBox);
+
+        let titleBox = new St.BoxLayout();
+        contentBox.add_actor(titleBox);
+
+        this.titleLabel = new St.Label({ style_class: 'message-title',
+                                         x_expand: true,
+                                         x_align: Clutter.ActorAlign.START });
+        this.setTitle(title);
+        titleBox.add_actor(this.titleLabel);
+
+        this._secondaryBin = new St.Bin({ style_class: 'message-secondary-bin' });
+        titleBox.add_actor(this._secondaryBin);
+
+        let closeIcon = new St.Icon({ icon_name: 'window-close-symbolic',
+                                      icon_size: 16 });
+        this._closeButton = new St.Button({ child: closeIcon, visible: false });
+        titleBox.add_actor(this._closeButton);
+
+        this._bodyStack = new St.Widget({ x_expand: true });
+        this._bodyStack.layout_manager = new LabelExpanderLayout();
+        contentBox.add_actor(this._bodyStack);
+
+        this.bodyLabel = new URLHighlighter('', false, this._useBodyMarkup);
+        this.bodyLabel.actor.add_style_class_name('message-body');
+        this._bodyStack.add_actor(this.bodyLabel.actor);
+        this.setBody(body);
+
+        this._closeButton.connect('clicked', Lang.bind(this, this.close));
+        this.actor.connect('notify::hover', Lang.bind(this, this._sync));
+        this.actor.connect('clicked', Lang.bind(this, this._onClicked));
+        this.actor.connect('destroy', Lang.bind(this, this._onDestroy));
+        this._sync();
+    },
+
+    close: function() {
+        this.emit('close');
+    },
+
+    setIcon: function(actor) {
+        this._iconBin.child = actor;
+        this._iconBin.visible = (actor != null);
+    },
+
+    setSecondaryActor: function(actor) {
+        this._secondaryBin.child = actor;
+    },
+
+    setTitle: function(text) {
+        let title = text ? _fixMarkup(text.replace(/\n/g, ' '), false) : '';
+        this.titleLabel.clutter_text.set_markup(title);
+    },
+
+    setBody: function(text) {
+        this._bodyText = text;
+        this.bodyLabel.setMarkup(text ? text.replace(/\n/g, ' ') : '',
+                                 this._useBodyMarkup);
+        if (this._expandedLabel)
+            this._expandedLabel.setMarkup(text, this._useBodyMarkup);
+    },
+
+    setUseBodyMarkup: function(enable) {
+        if (this._useBodyMarkup === enable)
+            return;
+        this._useBodyMarkup = enable;
+        if (this.bodyLabel)
+            this.setBody(this._bodyText);
+    },
+
+    setActionArea: function(actor) {
+        if (actor == null) {
+            if (this._actionBin.get_n_children() > 0)
+                this._actionBin.get_child_at_index(0).destroy();
+            return;
+        }
+
+        if (this._actionBin.get_n_children() > 0)
+            throw new Error('Message already has an action area');
+
+        this._actionBin.add_actor(actor);
+        this._actionBin.visible = this.expanded;
+    },
+
+    setExpandedBody: function(actor) {
+        if (actor == null) {
+            if (this._bodyStack.get_n_children() > 1)
+                this._bodyStack.get_child_at_index(1).destroy();
+            return;
+        }
+
+        if (this._bodyStack.get_n_children() > 1)
+            throw new Error('Message already has an expanded body actor');
+
+        this._bodyStack.insert_child_at_index(actor, 1);
+    },
+
+    setExpandedLines: function(nLines) {
+        this._bodyStack.layout_manager.expandLines = nLines;
+    },
+
+    expand: function(animate) {
+        this.expanded = true;
+
+        this._actionBin.visible = (this._actionBin.get_n_children() > 0);
+
+        if (this._bodyStack.get_n_children() < 2) {
+            this._expandedLabel = new URLHighlighter(this._bodyText,
+                                                     true, this._useBodyMarkup);
+            this.setExpandedBody(this._expandedLabel.actor);
+        }
+
+        if (animate) {
+            Tweener.addTween(this._bodyStack.layout_manager,
+                             { expansion: 1,
+                               time: MessageTray.ANIMATION_TIME,
+                               transition: 'easeOutQuad' });
+            this._actionBin.scale_y = 0;
+            Tweener.addTween(this._actionBin,
+                             { scale_y: 1,
+                               time: MessageTray.ANIMATION_TIME,
+                               transition: 'easeOutQuad' });
+        } else {
+            this._bodyStack.layout_manager.expansion = 1;
+            this._actionBin.scale_y = 1;
+        }
+
+        this.emit('expanded');
+    },
+
+    unexpand: function(animate) {
+        if (animate) {
+            Tweener.addTween(this._bodyStack.layout_manager,
+                             { expansion: 0,
+                               time: MessageTray.ANIMATION_TIME,
+                               transition: 'easeOutQuad' });
+            Tweener.addTween(this._actionBin,
+                             { scale_y: 0,
+                               time: MessageTray.ANIMATION_TIME,
+                               transition: 'easeOutQuad',
+                               onCompleteScope: this,
+                               onComplete: function() {
+                                   this._actionBin.hide();
+                                   this.expanded = false;
+                               }});
+        } else {
+            this._bodyStack.layout_manager.expansion = 0;
+            this._actionBin.scale_y = 0;
+            this.expanded = false;
+        }
+
+        this.emit('unexpanded');
+    },
+
+    canClose: function() {
+        return true;
+    },
+
+    _sync: function() {
+        let hovered = this.actor.hover;
+        this._closeButton.visible = hovered && this.canClose();
+        this._secondaryBin.visible = !hovered;
+    },
+
+    _onClicked: function() {
+    },
+
+    _onDestroy: function() {
+    },
+
+    _onKeyPressed: function(a, event) {
+        let keysym = event.get_key_symbol();
+
+        if (keysym == Clutter.KEY_Delete ||
+            keysym == Clutter.KEY_KP_Delete) {
+            this.close();
+            return Clutter.EVENT_STOP;
+        }
+        return Clutter.EVENT_PROPAGATE;
+    }
+});
+Signals.addSignalMethods(Message.prototype);
+
+const EventMessage = new Lang.Class({
+    Name: 'EventMessage',
+    Extends: Message,
+
+    _init: function(event, date) {
+        this._event = event;
+        this._date = date;
+
+        this.parent(this._formatEventTime(), event.summary);
+    },
+
+    _formatEventTime: function() {
+        let periodBegin = _getBeginningOfDay(this._date);
+        let periodEnd = _getEndOfDay(this._date);
+        let allDay = (this._event.allDay || (this._event.date <= periodBegin &&
+                                             this._event.end >= periodEnd));
+        let title;
+        if (allDay) {
+            /* Translators: Shown in calendar event list for all day events
+             * Keep it short, best if you can use less then 10 characters
+             */
+            title = C_("event list time", "All Day");
+        } else {
+            let date = this._event.date >= periodBegin ? this._event.date
+                                                       : this._event.end;
+            title = Util.formatTime(date, { timeOnly: true });
+        }
+
+        let rtl = Clutter.get_default_text_direction() == Clutter.TextDirection.RTL;
+        if (this._event.date < periodBegin && !this._event.allDay) {
+            if (rtl)
+                title = title + ELLIPSIS_CHAR;
+            else
+                title = ELLIPSIS_CHAR + title;
+        }
+        if (this._event.end > periodEnd && !this._event.allDay) {
+            if (rtl)
+                title = ELLIPSIS_CHAR + title;
+            else
+                title = title + ELLIPSIS_CHAR;
+        }
+        return title;
+    },
+
+    canClose: function() {
+        return _isToday(this._date);
+    }
+});
+
+const NotificationMessage = new Lang.Class({
+    Name: 'NotificationMessage',
+    Extends: Message,
+
+    _init: function(notification) {
+        this.notification = notification;
+
+        this.setUseBodyMarkup(notification.bannerBodyMarkup);
+        this.parent(notification.title, notification.bannerBodyText);
+
+        this.setIcon(this._getIcon());
+
+        this.connect('close', Lang.bind(this,
+            function() {
+                this._closed = true;
+                this.notification.destroy(MessageTray.NotificationDestroyedReason.DISMISSED);
+            }));
+        notification.connect('destroy', Lang.bind(this,
+            function() {
+                if (!this._closed)
+                    this.close();
+            }));
+        this._updatedId = notification.connect('updated',
+                                               Lang.bind(this, this._onUpdated));
+    },
+
+    _getIcon: function() {
+        if (this.notification.gicon)
+            return new St.Icon({ gicon: this.notification.gicon, icon_size: 48 });
+        else
+            return this.notification.source.createIcon(48);
+    },
+
+    _onUpdated: function(n, clear) {
+        this.setIcon(this._getIcon());
+        this.setTitle(n.title);
+        this.setBody(n.bannerBodyText);
+        this.setUseBodyMarkup(n.bannerBodyMarkup);
+    },
+
+    _onClicked: function() {
+        this.notification.activate();
+    },
+
+    _onDestroy: function() {
+        if (this._updatedId)
+            this.notification.disconnect(this._updatedId);
+        this._updatedId = 0;
+    }
+});
+
+const MessageListSection = new Lang.Class({
+    Name: 'MessageListSection',
+
+    _init: function(title) {
+        this.actor = new St.BoxLayout({ style_class: 'message-list-section',
+                                        clip_to_allocation: true,
+                                        x_expand: true, vertical: true });
+        let titleBox = new St.BoxLayout({ style_class: 'message-list-section-title-box' });
+        this.actor.add_actor(titleBox);
+
+        this._title = new St.Button({ style_class: 'message-list-section-title',
+                                      label: title,
+                                      can_focus: true,
+                                      x_expand: true,
+                                      x_align: St.Align.START });
+        titleBox.add_actor(this._title);
+
+        this._title.connect('clicked', Lang.bind(this, this._onTitleClicked));
+        this._title.connect('key-focus-in', Lang.bind(this, this._onKeyFocusIn));
+
+        let closeIcon = new St.Icon({ icon_name: 'window-close-symbolic' });
+        this._closeButton = new St.Button({ style_class: 'message-list-section-close',
+                                            child: closeIcon,
+                                            accessible_name: _("Clear section"),
+                                            can_focus: true });
+        this._closeButton.set_x_align(Clutter.ActorAlign.END);
+        titleBox.add_actor(this._closeButton);
+
+        this._closeButton.connect('clicked', Lang.bind(this, this.clear));
+
+        this._list = new St.BoxLayout({ style_class: 'message-list-section-list',
+                                        vertical: true });
+        this.actor.add_actor(this._list);
+
+        this._list.connect('actor-added', Lang.bind(this, this._sync));
+        this._list.connect('actor-removed', Lang.bind(this, this._sync));
+
+        let id = Main.sessionMode.connect('updated',
+                                          Lang.bind(this, this._sync));
+        this.actor.connect('destroy', function() {
+            Main.sessionMode.disconnect(id);
+        });
+
+        this._messages = new Map();
+        this._date = new Date();
+        this.empty = true;
+        this._sync();
+    },
+
+    _onTitleClicked: function() {
+        Main.overview.hide();
+        Main.panel.closeCalendar();
+    },
+
+    _onKeyFocusIn: function(actor) {
+        this.emit('key-focus-in', actor);
+    },
+
+    get allowed() {
+        return true;
+    },
+
+    setDate: function(date) {
+        if (_sameDay(date, this._date))
+            return;
+        this._date = date;
+        this._sync();
+    },
+
+    addMessage: function(message, animate) {
+        this.addMessageAtIndex(message, -1, animate);
+    },
+
+    addMessageAtIndex: function(message, index, animate) {
+        let obj = {
+            container: null,
+            destroyId: 0,
+            keyFocusId: 0,
+            closeId: 0
+        };
+        let pivot = new Clutter.Point({ x: .5, y: .5 });
+        let scale = animate ? 0 : 1;
+        obj.container = new St.Widget({ layout_manager: new ScaleLayout(),
+                                        pivot_point: pivot,
+                                        scale_x: scale, scale_y: scale });
+        obj.keyFocusId = message.actor.connect('key-focus-in',
+            Lang.bind(this, this._onKeyFocusIn));
+        obj.destroyId = message.actor.connect('destroy',
+            Lang.bind(this, function() {
+                this.removeMessage(message, false);
+            }));
+        obj.closeId = message.connect('close',
+            Lang.bind(this, function() {
+                this.removeMessage(message, true);
+            }));
+
+        this._messages.set(message, obj);
+        obj.container.add_actor(message.actor);
+
+        this._list.insert_child_at_index(obj.container, index);
+
+        if (animate)
+            Tweener.addTween(obj.container, { scale_x: 1,
+                                              scale_y: 1,
+                                              time: MESSAGE_ANIMATION_TIME,
+                                              transition: 'easeOutQuad' });
+    },
+
+    moveMessage: function(message, index, animate) {
+        let obj = this._messages.get(message);
+
+        if (!animate) {
+            this._list.set_child_at_index(obj.container, index);
+            return;
+        }
+
+        let onComplete = Lang.bind(this, function() {
+            this._list.set_child_at_index(obj.container, index);
+            Tweener.addTween(obj.container, { scale_x: 1,
+                                              scale_y: 1,
+                                              time: MESSAGE_ANIMATION_TIME,
+                                              transition: 'easeOutQuad' });
+        });
+        Tweener.addTween(obj.container, { scale_x: 0,
+                                          scale_y: 0,
+                                          time: MESSAGE_ANIMATION_TIME,
+                                          transition: 'easeOutQuad',
+                                          onComplete: onComplete });
+    },
+
+    removeMessage: function(message, animate) {
+        let obj = this._messages.get(message);
+
+        message.actor.disconnect(obj.destroyId);
+        message.actor.disconnect(obj.keyFocusId);
+        message.disconnect(obj.closeId);
+
+        this._messages.delete(message);
+
+        if (animate) {
+            Tweener.addTween(obj.container, { scale_x: 0, scale_y: 0,
+                                              time: MESSAGE_ANIMATION_TIME,
+                                              transition: 'easeOutQuad',
+                                              onComplete: function() {
+                                                  obj.container.destroy();
+                                                  global.sync_pointer();
+                                              }});
+        } else {
+            obj.container.destroy();
+            global.sync_pointer();
+        }
+    },
+
+    clear: function() {
+        let messages = [...this._messages.keys()].filter(function(message) {
+            return message.canClose();
+        });
+
+        // If there are few messages, letting them all zoom out looks OK
+        if (messages.length < 2) {
+            messages.forEach(function(message) {
+                message.close();
+            });
+        } else {
+            // Otherwise we slide them out one by one, and then zoom them
+            // out "off-screen" in the end to smoothly shrink the parent
+            let delay = MESSAGE_ANIMATION_TIME / Math.max(messages.length, 5);
+            for (let i = 0; i < messages.length; i++) {
+                let message = messages[i];
+                let obj = this._messages.get(message);
+                Tweener.addTween(obj.container,
+                                 { anchor_x: this._list.width,
+                                   opacity: 0,
+                                   time: MESSAGE_ANIMATION_TIME,
+                                   delay: i * delay,
+                                   transition: 'easeOutQuad',
+                                   onComplete: function() {
+                                       message.close();
+                                   }});
+            }
+        }
+    },
+
+    _canClear: function() {
+        for (let message of this._messages.keys())
+            if (message.canClose())
+                return true;
+        return false;
+    },
+
+    _shouldShow: function() {
+        return !this.empty;
+    },
+
+    _sync: function() {
+        let empty = this._list.get_n_children() == 0;
+        let changed = this.empty !== empty;
+        this.empty = empty;
+
+        if (changed)
+            this.emit('empty-changed');
+
+        this._closeButton.visible = this._canClear();
+        this.actor.visible = this.allowed && this._shouldShow();
+    }
+});
+Signals.addSignalMethods(MessageListSection.prototype);
+
+const EventsSection = new Lang.Class({
+    Name: 'EventsSection',
+    Extends: MessageListSection,
 
     _init: function() {
-        let layout = new Clutter.GridLayout({ orientation: Clutter.Orientation.VERTICAL });
-        this.actor = new St.Widget({ style_class: 'events-table',
-                                     layout_manager: layout });
-        layout.hookup_style(this.actor);
-        this._date = new Date();
         this._desktopSettings = new Gio.Settings({ schema_id: 'org.gnome.desktop.interface' });
-        this._desktopSettings.connect('changed', Lang.bind(this, this._update));
-        this._weekStart = Shell.util_get_week_start();
+        this._desktopSettings.connect('changed', Lang.bind(this, this._reloadEvents));
+        this._eventSource = new EmptyEventSource();
+
+        this._ignoredEvents = new Map();
+
+        let savedState = global.get_persistent_state('as', 'ignored_events');
+        if (savedState)
+            savedState.deep_unpack().forEach(Lang.bind(this,
+                function(eventId) {
+                    this._ignoredEvents.set(eventId, true);
+                }));
+
+        this.parent('');
+
+        Shell.AppSystem.get_default().connect('installed-changed',
+                                              Lang.bind(this, this._appInstalledChanged));
+        this._appInstalledChanged();
+    },
+
+    _ignoreEvent: function(event) {
+        this._ignoredEvents.set(event.id, true);
+        let savedState = new GLib.Variant('as', [...this._ignoredEvents.keys()]);
+        global.set_persistent_state('ignored_events', savedState);
     },
 
     setEventSource: function(eventSource) {
         this._eventSource = eventSource;
-        this._eventSource.connect('changed', Lang.bind(this, this._update));
+        this._eventSource.connect('changed', Lang.bind(this, this._reloadEvents));
     },
 
-    _addEvent: function(event, index, includeDayName, periodBegin, periodEnd) {
-        let dayString;
-        if (includeDayName) {
-            if (event.date >= periodBegin)
-                dayString = _getEventDayAbbreviation(event.date.getDay());
-            else /* show event end day if it began earlier */
-                dayString = _getEventDayAbbreviation(event.end.getDay());
-        } else {
-            dayString = '';
-        }
-
-        let dayLabel = new St.Label({ style_class: 'events-day-dayname',
-                                      text: dayString,
-                                      x_align: Clutter.ActorAlign.END,
-                                      y_align: Clutter.ActorAlign.START });
-        dayLabel.clutter_text.line_wrap = false;
-        dayLabel.clutter_text.ellipsize = false;
-
-        let rtl = this.actor.get_text_direction() == Clutter.TextDirection.RTL;
-
-        let layout = this.actor.layout_manager;
-        layout.attach(dayLabel, rtl ? 2 : 0, index, 1, 1);
-        let clockFormat = this._desktopSettings.get_string(CLOCK_FORMAT_KEY);
-        let timeString = _formatEventTime(event, clockFormat, periodBegin, periodEnd);
-        let timeLabel = new St.Label({ style_class: 'events-day-time',
-                                       text: timeString,
-                                       y_align: Clutter.ActorAlign.START });
-        timeLabel.clutter_text.line_wrap = false;
-        timeLabel.clutter_text.ellipsize = false;
-
-        let preEllipsisLabel = new St.Label({ style_class: 'events-day-time-ellipses',
-                                              text: ELLIPSIS_CHAR,
-                                              y_align: Clutter.ActorAlign.START });
-        let postEllipsisLabel = new St.Label({ style_class: 'events-day-time-ellipses',
-                                               text: ELLIPSIS_CHAR,
-                                               y_align: Clutter.ActorAlign.START });
-        if (event.allDay || event.date >= periodBegin)
-            preEllipsisLabel.opacity = 0;
-        if (event.allDay || event.end <= periodEnd)
-            postEllipsisLabel.opacity = 0;
-
-        let timeLabelBoxLayout = new St.BoxLayout();
-        timeLabelBoxLayout.add(preEllipsisLabel);
-        timeLabelBoxLayout.add(timeLabel);
-        timeLabelBoxLayout.add(postEllipsisLabel);
-        layout.attach(timeLabelBoxLayout, 1, index, 1, 1);
-
-        let titleLabel = new St.Label({ style_class: 'events-day-task',
-                                        text: event.summary,
-                                        x_expand: true });
-        titleLabel.clutter_text.line_wrap = true;
-        titleLabel.clutter_text.ellipsize = false;
-
-        layout.attach(titleLabel, rtl ? 0 : 2, index, 1, 1);
+    get allowed() {
+        return Main.sessionMode.showCalendarEvents;
     },
 
-    _addPeriod: function(header, index, periodBegin, periodEnd, includeDayName, showNothingScheduled) {
-        let events = this._eventSource.getEvents(periodBegin, periodEnd);
-
-        if (events.length == 0 && !showNothingScheduled)
-            return index;
-
-        let label = new St.Label({ style_class: 'events-day-header', text: header });
-        let layout = this.actor.layout_manager;
-        layout.attach(label, 0, index, 3, 1);
-        index++;
-
-        for (let n = 0; n < events.length; n++) {
-            this._addEvent(events[n], index, includeDayName, periodBegin, periodEnd);
-            index++;
+    _updateTitle: function() {
+        if (_isToday(this._date)) {
+            this._title.label = _("Events");
+            return;
         }
-
-        if (events.length == 0 && showNothingScheduled) {
-            /* Translators: Text to show if there are no events */
-            let nothingEvent = new CalendarEvent(periodBegin, periodBegin, _("Nothing Scheduled"), true);
-            this._addEvent(nothingEvent, index, false, periodBegin, periodEnd);
-            index++;
-        }
-
-        return index;
-    },
-
-    _showOtherDay: function(day) {
-        this.actor.destroy_all_children();
-
-        let dayBegin = _getBeginningOfDay(day);
-        let dayEnd = _getEndOfDay(day);
 
         let dayFormat;
         let now = new Date();
-        if (_sameYear(day, now))
+        if (_sameYear(this._date, now))
             /* Translators: Shown on calendar heading when selected day occurs on current year */
             dayFormat = Shell.util_translate_time_string(NC_("calendar heading",
                                                              "%A, %B %d"));
@@ -826,61 +1527,344 @@ const EventsList = new Lang.Class({
             /* Translators: Shown on calendar heading when selected day occurs on different year */
             dayFormat = Shell.util_translate_time_string(NC_("calendar heading",
                                                              "%A, %B %d, %Y"));
-        let dayString = day.toLocaleFormat(dayFormat);
-        this._addPeriod(dayString, 0, dayBegin, dayEnd, false, true);
+        this._title.label = this._date.toLocaleFormat(dayFormat);
     },
 
-    _showToday: function() {
-        this.actor.destroy_all_children();
-        let index = 0;
-
-        let now = new Date();
-        let dayBegin = _getBeginningOfDay(now);
-        let dayEnd = _getEndOfDay(now);
-        index = this._addPeriod(_("Today"), index, dayBegin, dayEnd, false, true);
-
-        let tomorrowBegin = new Date(dayBegin.getTime() + 86400 * 1000);
-        let tomorrowEnd = new Date(dayEnd.getTime() + 86400 * 1000);
-        index = this._addPeriod(_("Tomorrow"), index, tomorrowBegin, tomorrowEnd, false, true);
-
-        let dayInWeek = (dayEnd.getDay() - this._weekStart + 7) % 7;
-
-        if (dayInWeek < 5) {
-            /* If now is within the first 5 days we show "This week" and
-             * include events up until and including Saturday/Sunday
-             * (depending on whether a week starts on Sunday/Monday).
-             */
-            let thisWeekBegin = new Date(dayBegin.getTime() + 2 * 86400 * 1000);
-            let thisWeekEnd = new Date(dayEnd.getTime() + (6 - dayInWeek) * 86400 * 1000);
-            index = this._addPeriod(_("This week"), index, thisWeekBegin, thisWeekEnd, true, false);
-        } else {
-            /* otherwise it's one of the two last days of the week ... show
-             * "Next week" and include events up until and including *next*
-             * Saturday/Sunday
-             */
-            let nextWeekBegin = new Date(dayBegin.getTime() + 2 * 86400 * 1000);
-            let nextWeekEnd = new Date(dayEnd.getTime() + (13 - dayInWeek) * 86400 * 1000);
-            index = this._addPeriod(_("Next week"), index, nextWeekBegin, nextWeekEnd, true, false);
-        }
-    },
-
-    // Sets the event list to show events from a specific date
-    setDate: function(date) {
-        if (!_sameDay(date, this._date)) {
-            this._date = date;
-            this._update();
-        }
-    },
-
-    _update: function() {
+    _reloadEvents: function() {
         if (this._eventSource.isLoading)
             return;
 
-        let today = new Date();
-        if (_sameDay (this._date, today)) {
-            this._showToday();
-        } else {
-            this._showOtherDay(this._date);
+        this._reloading = true;
+
+        this._list.destroy_all_children();
+
+        let periodBegin = _getBeginningOfDay(this._date);
+        let periodEnd = _getEndOfDay(this._date);
+        let events = this._eventSource.getEvents(periodBegin, periodEnd);
+
+        for (let i = 0; i < events.length; i++) {
+            let event = events[i];
+
+            if (this._ignoredEvents.has(event.id))
+                continue;
+
+            let message = new EventMessage(event, this._date);
+            message.connect('close', Lang.bind(this, function() {
+                this._ignoreEvent(event);
+            }));
+            this.addMessage(message, false);
         }
+
+        this._reloading = false;
+        this._sync();
+    },
+
+    _appInstalledChanged: function() {
+        this._calendarApp = undefined;
+        this._title.reactive = (this._getCalendarApp() != null);
+    },
+
+    _getCalendarApp: function() {
+        if (this._calendarApp !== undefined)
+            return this._calendarApp;
+
+        let apps = Gio.AppInfo.get_recommended_for_type('text/calendar');
+        if (apps && (apps.length > 0)) {
+            let app = Gio.AppInfo.get_default_for_type('text/calendar', false);
+            let defaultInRecommended = apps.some(function(a) { return a.equal(app); });
+            this._calendarApp = defaultInRecommended ? app : apps[0];
+        } else {
+            this._calendarApp = null;
+        }
+        return this._calendarApp;
+    },
+
+    _onTitleClicked: function() {
+        this.parent();
+
+        let app = this._getCalendarApp();
+        if (app.get_id() == 'evolution.desktop')
+            app = Gio.DesktopAppInfo.new('evolution-calendar.desktop');
+        app.launch([], global.create_app_launch_context(0, -1));
+    },
+
+    setDate: function(date) {
+        this.parent(date);
+        this._updateTitle();
+        this._reloadEvents();
+    },
+
+    _shouldShow: function() {
+        return !this.empty || !_isToday(this._date);
+    },
+
+    _sync: function() {
+        if (this._reloading)
+            return;
+
+        this.parent();
+    }
+});
+
+const NotificationSection = new Lang.Class({
+    Name: 'NotificationSection',
+    Extends: MessageListSection,
+
+    _init: function() {
+        this.parent(_("Notifications"));
+
+        this._sources = new Map();
+        this._nUrgent = 0;
+
+        Main.messageTray.connect('source-added', Lang.bind(this, this._sourceAdded));
+        Main.messageTray.getSources().forEach(Lang.bind(this, function(source) {
+            this._sourceAdded(Main.messageTray, source);
+        }));
+
+        this.actor.connect('notify::mapped', Lang.bind(this, this._onMapped));
+    },
+
+    get allowed() {
+        return Main.sessionMode.hasNotifications &&
+               !Main.sessionMode.isGreeter;
+    },
+
+    _createTimeLabel: function() {
+        let label = Util.createTimeLabel(new Date());
+        label.style_class = 'event-time',
+        label.x_align = Clutter.ActorAlign.END;
+        return label;
+    },
+
+    _sourceAdded: function(tray, source) {
+        let obj = {
+            destroyId: 0,
+            notificationAddedId: 0,
+        };
+
+        obj.destroyId = source.connect('destroy', Lang.bind(this, function(source) {
+            this._onSourceDestroy(source, obj);
+        }));
+        obj.notificationAddedId = source.connect('notification-added',
+                                                 Lang.bind(this, this._onNotificationAdded));
+
+        this._sources.set(source, obj);
+    },
+
+    _onNotificationAdded: function(source, notification) {
+        let message = new NotificationMessage(notification);
+        message.setSecondaryActor(this._createTimeLabel());
+
+        let isUrgent = notification.urgency == MessageTray.Urgency.CRITICAL;
+
+        let updatedId = notification.connect('updated', Lang.bind(this,
+            function() {
+                message.setSecondaryActor(this._createTimeLabel());
+                this.moveMessage(message, isUrgent ? 0 : this._nUrgent, this.actor.mapped);
+            }));
+        let destroyId = notification.connect('destroy', Lang.bind(this,
+            function() {
+                notification.disconnect(destroyId);
+                notification.disconnect(updatedId);
+                if (isUrgent)
+                    this._nUrgent--;
+            }));
+
+        if (isUrgent) {
+            // Keep track of urgent notifications to keep them on top
+            this._nUrgent++;
+        } else if (this.mapped) {
+            // Only acknowledge non-urgent notifications in case it
+            // has important actions that are inaccessible when not
+            // shown as banner
+            notification.acknowledged = true;
+        }
+
+        let index = isUrgent ? 0 : this._nUrgent;
+        this.addMessageAtIndex(message, index, this.actor.mapped);
+    },
+
+    _onSourceDestroy: function(source, obj) {
+        source.disconnect(obj.destroyId);
+        source.disconnect(obj.notificationAddedId);
+
+        this._sources.delete(source);
+    },
+
+    _onMapped: function() {
+        if (!this.actor.mapped)
+            return;
+
+        for (let message of this._messages.keys())
+            if (message.notification.urgency != MessageTray.Urgency.CRITICAL)
+                message.notification.acknowledged = true;
+    },
+
+    _onTitleClicked: function() {
+        this.parent();
+
+        let app = Shell.AppSystem.get_default().lookup_app('gnome-notifications-panel.desktop');
+
+        if (!app) {
+            log('Settings panel for desktop file ' + desktopFile + ' could not be loaded!');
+            return;
+        }
+
+        app.activate();
+    },
+
+    _shouldShow: function() {
+        return !this.empty && _isToday(this._date);
+    },
+
+    _sync: function() {
+        this.parent();
+        this._title.reactive = Main.sessionMode.allowSettings;
+    }
+});
+
+const Placeholder = new Lang.Class({
+    Name: 'Placeholder',
+
+    _init: function() {
+        this.actor = new St.BoxLayout({ style_class: 'message-list-placeholder',
+                                        vertical: true });
+
+        this._date = new Date();
+
+        let todayFile = Gio.File.new_for_uri('resource:///org/gnome/shell/theme/no-notifications.svg');
+        let otherFile = Gio.File.new_for_uri('resource:///org/gnome/shell/theme/no-events.svg');
+        this._todayIcon = new Gio.FileIcon({ file: todayFile });
+        this._otherIcon = new Gio.FileIcon({ file: otherFile });
+
+        this._icon = new St.Icon();
+        this.actor.add_actor(this._icon);
+
+        this._label = new St.Label();
+        this.actor.add_actor(this._label);
+
+        this._sync();
+    },
+
+    setDate: function(date) {
+        if (_sameDay(this._date, date))
+            return;
+        this._date = date;
+        this._sync();
+    },
+
+    _sync: function() {
+        let isToday = _isToday(this._date);
+        if (isToday && this._icon.gicon == this._todayIcon)
+            return;
+        if (!isToday && this._icon.gicon == this._otherIcon)
+            return;
+
+        if (isToday) {
+            this._icon.gicon = this._todayIcon;
+            this._label.text = _("No Notifications");
+        } else {
+            this._icon.gicon = this._otherIcon;
+            this._label.text = _("No Events");
+        }
+    }
+});
+
+const MessageList = new Lang.Class({
+    Name: 'MessageList',
+
+    _init: function() {
+        this.actor = new St.Widget({ style_class: 'message-list',
+                                     layout_manager: new Clutter.BinLayout(),
+                                     x_expand: true, y_expand: true });
+
+        this._placeholder = new Placeholder();
+        this.actor.add_actor(this._placeholder.actor);
+
+        this._scrollView = new St.ScrollView({ style_class: 'vfade',
+                                               overlay_scrollbars: true,
+                                               x_expand: true, y_expand: true,
+                                               x_fill: true, y_fill: true });
+        this._scrollView.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC);
+        this.actor.add_actor(this._scrollView);
+
+        this._sectionList = new St.BoxLayout({ style_class: 'message-list-sections',
+                                               vertical: true,
+                                               y_expand: true,
+                                               y_align: Clutter.ActorAlign.START });
+        this._scrollView.add_actor(this._sectionList);
+        this._sections = new Map();
+
+        this._notificationSection = new NotificationSection();
+        this._addSection(this._notificationSection);
+
+        this._eventsSection = new EventsSection();
+        this._addSection(this._eventsSection);
+
+        Main.sessionMode.connect('updated', Lang.bind(this, this._sync));
+    },
+
+    _addSection: function(section) {
+        let obj = {
+            destroyId: 0,
+            visibleId:  0,
+            emptyChangedId: 0,
+            keyFocusId: 0
+        };
+        obj.destroyId = section.actor.connect('destroy', Lang.bind(this,
+            function() {
+                this._removeSection(section);
+            }));
+        obj.visibleId = section.actor.connect('notify::visible',
+                                              Lang.bind(this, this._sync));
+        obj.emptyChangedId = section.connect('empty-changed',
+                                             Lang.bind(this, this._sync));
+        obj.keyFocusId = section.connect('key-focus-in',
+                                         Lang.bind(this, this._onKeyFocusIn));
+
+        this._sections.set(section, obj);
+        this._sectionList.add_actor(section.actor);
+        this._sync();
+    },
+
+    _removeSection: function(section) {
+        let obj = this._sections.get(section);
+        section.actor.disconnect(obj.destroyId);
+        section.actor.disconnect(obj.visibleId);
+        section.disconnect(obj.emptyChangedId);
+        section.disconnect(obj.keyFocusId);
+
+        this._sections.delete(section);
+        this._sectionList.remove_actor(section.actor);
+        this._sync();
+    },
+
+    _onKeyFocusIn: function(section, actor) {
+        Util.ensureActorVisibleInScrollView(this._scrollView, actor);
+    },
+
+    _sync: function() {
+        let sections = [...this._sections.keys()];
+        let visible = sections.some(function(s) {
+            return s.allowed;
+        });
+        this.actor.visible = visible;
+        if (!visible)
+            return;
+
+        let showPlaceholder = sections.every(function(s) {
+            return s.empty || !s.actor.visible;
+        });
+        this._placeholder.actor.visible = showPlaceholder;
+    },
+
+    setEventSource: function(eventSource) {
+        this._eventsSection.setEventSource(eventSource);
+    },
+
+    setDate: function(date) {
+        for (let section of this._sections.keys())
+            section.setDate(date);
+        this._placeholder.setDate(date);
     }
 });

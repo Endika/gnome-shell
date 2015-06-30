@@ -60,9 +60,6 @@ const CURTAIN_SLIDE_TIME = 0.3;
 const Clock = new Lang.Class({
     Name: 'ScreenShieldClock',
 
-    CLOCK_FORMAT_KEY: 'clock-format',
-    CLOCK_SHOW_SECONDS_KEY: 'clock-show-seconds',
-
     _init: function() {
         this.actor = new St.BoxLayout({ style_class: 'screen-shield-clock',
                                         vertical: true });
@@ -101,18 +98,14 @@ const NotificationsBox = new Lang.Class({
     _init: function() {
         this.actor = new St.BoxLayout({ vertical: true,
                                         name: 'screenShieldNotifications',
-                                        style_class: 'screen-shield-notifications-box' });
-
-        this._musicBin = new St.Bin({ style_class: 'screen-shield-notifications-box',
-                                      visible: false });
+                                        style_class: 'screen-shield-notifications-container' });
 
         this._scrollView = new St.ScrollView({ x_fill: false, x_align: St.Align.START,
                                                hscrollbar_policy: Gtk.PolicyType.NEVER });
         this._notificationBox = new St.BoxLayout({ vertical: true,
-                                                   style_class: 'screen-shield-notifications-box' });
+                                                   style_class: 'screen-shield-notifications-container' });
         this._scrollView.add_actor(this._notificationBox);
 
-        this.actor.add(this._musicBin);
         this.actor.add(this._scrollView, { x_fill: true, x_align: St.Align.START });
 
         this._sources = new Map();
@@ -139,12 +132,11 @@ const NotificationsBox = new Lang.Class({
     },
 
     _updateVisibility: function() {
-        this._musicBin.visible = this._musicBin.child != null && this._musicBin.child.visible;
         this._notificationBox.visible = this._notificationBox.get_children().some(function(a) {
             return a.visible;
         });
 
-        this.actor.visible = this._musicBin.visible || this._notificationBox.visible;
+        this.actor.visible = this._notificationBox.visible;
     },
 
     _makeNotificationCountText: function(count, isChat) {
@@ -192,7 +184,7 @@ const NotificationsBox = new Lang.Class({
         for (let i = 0; i < source.notifications.length; i++) {
             let n = source.notifications[i];
 
-            if (n.acknowledged || n.isMusic)
+            if (n.acknowledged)
                 continue;
 
             let body = '';
@@ -213,29 +205,13 @@ const NotificationsBox = new Lang.Class({
     },
 
     _showSource: function(source, obj, box) {
-        let musicNotification = source.getMusicNotification();
-
-        if (musicNotification != null &&
-            this._musicBin.child == null) {
-            musicNotification.acknowledged = true;
-            if (musicNotification.actor.get_parent() != null)
-                musicNotification.actor.get_parent().remove_actor(musicNotification.actor);
-            this._musicBin.child = musicNotification.actor;
-            this._musicBin.child.visible = obj.visible;
-
-            musicNotification.expand(false /* animate */);
-
-            obj.musicNotification = musicNotification;
-        }
-
         if (obj.detailed) {
             [obj.titleLabel, obj.countLabel] = this._makeNotificationDetailedSource(source, box);
         } else {
             [obj.titleLabel, obj.countLabel] = this._makeNotificationSource(source, box);
         }
 
-        box.visible = obj.visible &&
-            (source.unseenCount > (musicNotification ? 1 : 0));
+        box.visible = obj.visible && (source.unseenCount > 0);
     },
 
     _sourceAdded: function(tray, source, initial) {
@@ -246,22 +222,15 @@ const NotificationsBox = new Lang.Class({
             sourceCountChangedId: 0,
             sourceTitleChangedId: 0,
             sourceUpdatedId: 0,
-            sourceNotifyId: 0,
-            musicNotification: null,
             sourceBox: null,
             titleLabel: null,
             countLabel: null,
         };
 
-        obj.sourceBox = new St.BoxLayout({ style_class: 'screen-shield-notification-source' });
+        obj.sourceBox = new St.BoxLayout({ style_class: 'screen-shield-notification-source',
+                                           x_expand: true });
         this._showSource(source, obj, obj.sourceBox);
         this._notificationBox.add(obj.sourceBox, { x_fill: false, x_align: St.Align.START });
-
-        if (obj.musicNotification) {
-            obj.sourceNotifyId = source.connect('notify', Lang.bind(this, function(source, notification) {
-                notification.acknowledged = true;
-            }));
-        }
 
         obj.sourceCountChangedId = source.connect('count-updated', Lang.bind(this, function(source) {
             this._countChanged(source, obj);
@@ -302,7 +271,8 @@ const NotificationsBox = new Lang.Class({
                              });
 
             this._updateVisibility();
-            this.emit('wake-up-screen');
+            if (obj.sourceBox.visible)
+                this.emit('wake-up-screen');
         }
     },
 
@@ -323,8 +293,7 @@ const NotificationsBox = new Lang.Class({
             obj.countLabel.text = this._makeNotificationCountText(count, source.isChat);
         }
 
-        obj.sourceBox.visible = obj.visible &&
-            (source.unseenCount > (obj.musicNotification ? 1 : 0));
+        obj.sourceBox.visible = obj.visible && (source.unseenCount > 0);
 
         this._updateVisibility();
         if (obj.sourceBox.visible)
@@ -336,10 +305,7 @@ const NotificationsBox = new Lang.Class({
             return;
 
         obj.visible = source.policy.showInLockScreen;
-        if (obj.musicNotification)
-            obj.musicNotification.actor.visible = obj.visible;
-        obj.sourceBox.visible = obj.visible &&
-            source.unseenCount > (obj.musicNotification ? 1 : 0);
+        obj.sourceBox.visible = obj.visible && source.unseenCount > 0;
 
         this._updateVisibility();
         if (obj.sourceBox.visible)
@@ -365,13 +331,6 @@ const NotificationsBox = new Lang.Class({
     _removeSource: function(source, obj) {
         obj.sourceBox.destroy();
         obj.sourceBox = obj.titleLabel = obj.countLabel = null;
-
-        if (obj.musicNotification) {
-            this._musicBin.child = null;
-            obj.musicNotification = null;
-
-            source.disconnect(obj.sourceNotifyId);
-        }
 
         source.disconnect(obj.sourceDestroyId);
         source.disconnect(obj.sourceCountChangedId);
@@ -548,21 +507,22 @@ const ScreenShield = new Lang.Class({
                                                       this._liftShield(true, 0);
                                               }));
 
-        this._inhibitor = null;
-        this._aboutToSuspend = false;
         this._loginManager = LoginManager.getLoginManager();
         this._loginManager.connect('prepare-for-sleep',
                                    Lang.bind(this, this._prepareForSleep));
-        this._inhibitSuspend();
 
+        this._loginSession = null;
         this._loginManager.getCurrentSessionProxy(Lang.bind(this,
             function(sessionProxy) {
                 this._loginSession = sessionProxy;
                 this._loginSession.connectSignal('Lock', Lang.bind(this, function() { this.lock(false); }));
                 this._loginSession.connectSignal('Unlock', Lang.bind(this, function() { this.deactivate(false); }));
+                this._loginSession.connect('g-properties-changed', Lang.bind(this, this._syncInhibitor));
+                this._syncInhibitor();
             }));
 
         this._settings = new Gio.Settings({ schema_id: SCREENSAVER_SCHEMA });
+        this._settings.connect('changed::' + LOCK_ENABLED_KEY, Lang.bind(this, this._syncInhibitor));
 
         this._isModal = false;
         this._hasLockScreen = false;
@@ -588,6 +548,18 @@ const ScreenShield = new Lang.Class({
 
         this.idleMonitor = Meta.IdleMonitor.get_core();
         this._cursorTracker = Meta.CursorTracker.get_for_screen(global.screen);
+
+        this._syncInhibitor();
+    },
+
+    _setActive: function(active) {
+        let prevIsActive = this._isActive;
+        this._isActive = active;
+
+        if (prevIsActive != this._isActive)
+            this.emit('active-changed');
+
+        this._syncInhibitor();
     },
 
     _createBackground: function(monitorIndex) {
@@ -705,31 +677,28 @@ const ScreenShield = new Lang.Class({
         return Clutter.EVENT_STOP;
     },
 
-    _inhibitSuspend: function() {
-        this._loginManager.inhibit(_("GNOME needs to lock the screen"),
-                                   Lang.bind(this, function(inhibitor) {
-                                       this._inhibitor = inhibitor;
-                                   }));
-    },
-
-    _uninhibitSuspend: function() {
-        if (this._inhibitor)
-            this._inhibitor.close(null);
-        this._inhibitor = null;
+    _syncInhibitor: function() {
+        let inhibit = (this._loginSession && this._loginSession.Active &&
+                       !this._isActive && this._settings.get_boolean(LOCK_ENABLED_KEY));
+        if (inhibit) {
+            this._loginManager.inhibit(_("GNOME needs to lock the screen"),
+                                       Lang.bind(this, function(inhibitor) {
+                                           if (this._inhibitor)
+                                               this._inhibitor.close(null);
+                                           this._inhibitor = inhibitor;
+                                       }));
+        } else {
+            if (this._inhibitor)
+                this._inhibitor.close(null);
+            this._inhibitor = null;
+        }
     },
 
     _prepareForSleep: function(loginManager, aboutToSuspend) {
-        this._aboutToSuspend = aboutToSuspend;
-
         if (aboutToSuspend) {
-            if (!this._settings.get_boolean(LOCK_ENABLED_KEY)) {
-                this._uninhibitSuspend();
-                return;
-            }
-            this.lock(true);
+            if (this._settings.get_boolean(LOCK_ENABLED_KEY))
+                this.lock(true);
         } else {
-            this._inhibitSuspend();
-
             this._wakeUpScreen();
         }
     },
@@ -1124,15 +1093,7 @@ const ScreenShield = new Lang.Class({
     },
 
     _completeLockScreenShown: function() {
-        let prevIsActive = this._isActive;
-        this._isActive = true;
-
-        if (prevIsActive != this._isActive)
-            this.emit('active-changed');
-
-        if (this._aboutToSuspend)
-            this._uninhibitSuspend();
-
+        this._setActive(true);
         this.emit('lock-screen-shown');
     },
 
@@ -1226,8 +1187,7 @@ const ScreenShield = new Lang.Class({
             // gnome-settings-daemon will stop blanking the screen
 
             this._activationTime = 0;
-            this._isActive = false;
-            this.emit('active-changed');
+            this._setActive(false);
             return;
         }
 
@@ -1270,9 +1230,8 @@ const ScreenShield = new Lang.Class({
         }
 
         this._activationTime = 0;
-        this._isActive = false;
+        this._setActive(false);
         this._isLocked = false;
-        this.emit('active-changed');
         this.emit('locked-changed');
         global.set_runtime_state(LOCKED_STATE_STR, null);
     },

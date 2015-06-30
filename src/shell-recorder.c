@@ -61,8 +61,6 @@ struct _ShellRecorder {
   int pointer_x;
   int pointer_y;
 
-  int xinput_opcode;
-
   GSettings *a11y_settings;
   gboolean draw_cursor;
   MetaCursorTracker *cursor_tracker;
@@ -81,7 +79,6 @@ struct _ShellRecorder {
   RecorderPipeline *current_pipeline; /* current pipeline */
   GSList *pipelines; /* all pipelines */
 
-  GstClockTime start_time; /* When we started recording */
   GstClockTime last_frame_time; /* Timestamp for the last frame */
 
   /* GSource IDs for different timeouts and idles */
@@ -151,12 +148,9 @@ G_DEFINE_TYPE(ShellRecorder, shell_recorder, G_TYPE_OBJECT);
  */
 #define MAXIMUM_PAUSE_TIME 1000
 
-/* The default pipeline. videorate is used to give a constant stream of
- * frames to theora even if there is a pause because nothing is moving.
- * (Theora does have some support for frames at non-uniform times, but
- * things seem to break down if there are large gaps.)
+/* The default pipeline.
  */
-#define DEFAULT_PIPELINE "vp8enc min_quantizer=13 max_quantizer=13 cpu-used=5 deadline=1000000 threads=%T ! queue ! webmmux"
+#define DEFAULT_PIPELINE "vp9enc min_quantizer=13 max_quantizer=13 cpu-used=5 deadline=1000000 threads=%T ! queue ! webmmux"
 
 /* If we can find the amount of memory on the machine, we use half
  * of that for memory_target, otherwise, we use this value, in kB.
@@ -390,22 +384,6 @@ recorder_draw_cursor (ShellRecorder *recorder,
   gst_buffer_unmap (buffer, &info);
 }
 
-/* We want to time-stamp each frame based on the actual time it was
- * recorded. We probably should use the pipeline clock rather than
- * gettimeofday(): that would be needed to get sync'ed audio correct.
- * I'm not immediately sure how to handle the adjustment we currently
- * do when pausing recording - is pausing the pipeline enough?
- */
-static GstClockTime
-get_wall_time (void)
-{
-  GTimeVal tv;
-
-  g_get_current_time (&tv);
-
-  return tv.tv_sec * 1000000000LL + tv.tv_usec * 1000LL;
-}
-
 /* Retrieve a frame and feed it into the pipeline
  */
 static void
@@ -414,7 +392,8 @@ recorder_record_frame (ShellRecorder *recorder)
   GstBuffer *buffer;
   guint8 *data;
   guint size;
-  GstClockTime now;
+  GstClock *clock;
+  GstClockTime now, base_time;
 
   g_return_if_fail (recorder->current_pipeline != NULL);
 
@@ -429,29 +408,38 @@ recorder_record_frame (ShellRecorder *recorder)
    * drop frames if the interval since the last frame is less than 75% of the
    * desired inter-frame interval.
    */
-  now = get_wall_time();
-  if (now - recorder->last_frame_time < (3 * 1000000000LL / (4 * recorder->framerate)))
+  clock = gst_element_get_clock (recorder->current_pipeline->src);
+
+  /* If we have no clock yet, the pipeline is not yet in PLAYING */
+  if (!clock)
     return;
 
+  base_time = gst_element_get_base_time (recorder->current_pipeline->src);
+  now = gst_clock_get_time (clock) - base_time;
+  gst_object_unref (clock);
+
+  if (GST_CLOCK_TIME_IS_VALID (recorder->last_frame_time) &&
+      now - recorder->last_frame_time < gst_util_uint64_scale_int (GST_SECOND, 3, 4 * recorder->framerate))
+    return;
   recorder->last_frame_time = now;
 
   size = recorder->area.width * recorder->area.height * 4;
 
-  data = g_malloc (recorder->area.width * 4 * recorder->area.height);
-  cogl_read_pixels (recorder->area.x,
-                    recorder->area.y,
-                    recorder->area.width,
-                    recorder->area.height,
-                    COGL_READ_PIXELS_COLOR_BUFFER,
-                    CLUTTER_CAIRO_FORMAT_ARGB32,
-                    data);
+  data = g_malloc (size);
+  cogl_framebuffer_read_pixels (cogl_get_draw_framebuffer (),
+                                recorder->area.x,
+                                recorder->area.y,
+                                recorder->area.width,
+                                recorder->area.height,
+                                CLUTTER_CAIRO_FORMAT_ARGB32,
+                                data);
 
   buffer = gst_buffer_new();
   gst_buffer_insert_memory (buffer, -1,
                             gst_memory_new_wrapped (0, data, size, 0,
                                                     size, data, g_free));
 
-  GST_BUFFER_PTS(buffer) = now - recorder->start_time;
+  GST_BUFFER_PTS(buffer) = now;
 
   if (recorder->draw_cursor &&
       !g_settings_get_boolean (recorder->a11y_settings, MAGNIFIER_ACTIVE_KEY))
@@ -1261,7 +1249,7 @@ recorder_pipeline_closed (RecorderPipeline *pipeline)
 
 /*
  * Replaces '%T' in the passed pipeline with the thread count,
- * the maximum possible value is 64 (limit of what vp8enc supports)
+ * the maximum possible value is 64 (limit of what vp9enc supports)
  *
  * It is assumes that %T occurs only once.
  */
@@ -1291,7 +1279,7 @@ substitute_thread_count (const char *pipeline)
   g_string_append_printf (result, "%d", n_threads);
   g_string_append (result, tmp + 2);
 
-  return g_string_free (result, FALSE);;
+  return g_string_free (result, FALSE);
 }
 
 static gboolean
@@ -1303,7 +1291,7 @@ recorder_open_pipeline (ShellRecorder *recorder)
   GError *error = NULL;
   GstBus *bus;
 
-  pipeline = g_new0(RecorderPipeline, 1);
+  pipeline = g_new0 (RecorderPipeline, 1);
   pipeline->recorder = g_object_ref (recorder);
   pipeline->outfile = - 1;
 
@@ -1459,7 +1447,7 @@ shell_recorder_set_draw_cursor (ShellRecorder *recorder,
  * might be used to send the output to an icecast server
  * via shout2send or similar.
  *
- * The default value is 'vp8enc min_quantizer=13 max_quantizer=13 cpu-used=5 deadline=1000000 threads=%T ! queue ! webmmux'
+ * The default value is 'vp9enc min_quantizer=13 max_quantizer=13 cpu-used=5 deadline=1000000 threads=%T ! queue ! webmmux'
  */
 void
 shell_recorder_set_pipeline (ShellRecorder *recorder,
@@ -1530,8 +1518,7 @@ shell_recorder_record (ShellRecorder  *recorder,
 
   recorder_connect_stage_callbacks (recorder);
 
-  recorder->start_time = get_wall_time();
-  recorder->last_frame_time = 0;
+  recorder->last_frame_time = GST_CLOCK_TIME_NONE;
 
   recorder->state = RECORDER_STATE_RECORDING;
   recorder_update_pointer (recorder);

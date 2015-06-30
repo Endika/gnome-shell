@@ -91,21 +91,6 @@ const rewriteRules = {
     ]
 };
 
-const STANDARD_TRAY_ICON_IMPLEMENTATIONS = {
-    'bluetooth-applet': 'bluetooth',
-    'gnome-volume-control-applet': 'volume', // renamed to gnome-sound-applet
-                                             // when moved to control center
-    'gnome-sound-applet': 'volume',
-    'nm-applet': 'network',
-    'gnome-power-manager': 'battery',
-    'keyboard': 'keyboard',
-    'a11y-keyboard': 'a11y',
-    'kbd-scrolllock': 'keyboard',
-    'kbd-numlock': 'keyboard',
-    'kbd-capslock': 'keyboard',
-    'ibus-ui-gtk': 'keyboard'
-};
-
 const FdoNotificationDaemon = new Lang.Class({
     Name: 'FdoNotificationDaemon',
 
@@ -120,13 +105,10 @@ const FdoNotificationDaemon = new Lang.Class({
 
         this._nextNotificationId = 1;
 
-        Shell.WindowTracker.get_default().connect('notify::focus-app', Lang.bind(this, this._onFocusAppChanged));
-        Main.overview.connect('hidden', Lang.bind(this, this._onFocusAppChanged));
-
-        this._trayManager = new Shell.TrayManager();
-        this._trayIconAddedId = this._trayManager.connect('tray-icon-added', Lang.bind(this, this._onTrayIconAdded));
-        this._trayIconRemovedId = this._trayManager.connect('tray-icon-removed', Lang.bind(this, this._onTrayIconRemoved));
-        this._trayManager.manage_screen(global.screen, Main.messageTray.actor);
+        Shell.WindowTracker.get_default().connect('notify::focus-app',
+            Lang.bind(this, this._onFocusAppChanged));
+        Main.overview.connect('hidden',
+            Lang.bind(this, this._onFocusAppChanged));
     },
 
     _imageForNotificationData: function(hints) {
@@ -167,11 +149,10 @@ const FdoNotificationDaemon = new Lang.Class({
         return null;
     },
 
-    _lookupSource: function(title, pid, trayIcon) {
+    _lookupSource: function(title, pid) {
         for (let i = 0; i < this._sources.length; i++) {
             let source = this._sources[i];
-            if (source.pid == pid &&
-                (source.initialTitle == title || source.trayIcon || trayIcon))
+            if (source.pid == pid && source.initialTitle == title)
                 return source;
         }
         return null;
@@ -188,7 +169,7 @@ const FdoNotificationDaemon = new Lang.Class({
     //
     // Either a pid or ndata.notification is needed to retrieve or
     // create a source.
-    _getSource: function(title, pid, ndata, sender, trayIcon) {
+    _getSource: function(title, pid, ndata, sender) {
         if (!pid && !(ndata && ndata.notification))
             return null;
 
@@ -199,13 +180,13 @@ const FdoNotificationDaemon = new Lang.Class({
         if (ndata && ndata.notification)
             return ndata.notification.source;
 
-        let source = this._lookupSource(title, pid, trayIcon);
+        let source = this._lookupSource(title, pid);
         if (source) {
             source.setTitle(title);
             return source;
         }
 
-        let source = new FdoNotificationDaemonSource(title, pid, sender, trayIcon, ndata ? ndata.hints['desktop-entry'] : null);
+        let source = new FdoNotificationDaemonSource(title, pid, sender, ndata ? ndata.hints['desktop-entry'] : null);
 
         this._sources.push(source);
         source.connect('destroy', Lang.bind(this, function() {
@@ -231,13 +212,10 @@ const FdoNotificationDaemon = new Lang.Class({
 
         // Filter out chat, presence, calls and invitation notifications from
         // Empathy, since we handle that information from telepathyClient.js
-        if (appName == 'Empathy' && (hints['category'] == 'im.received' ||
-              hints['category'] == 'x-empathy.im.room-invitation' ||
-              hints['category'] == 'x-empathy.call.incoming' ||
-              hints['category'] == 'x-empathy.transfer.incoming' ||
-              hints['category'] == 'x-empathy.im.subscription-request' ||
-              hints['category'] == 'presence.online' ||
-              hints['category'] == 'presence.offline')) {
+        //
+        // Note that empathy uses im.received for one to one chats and
+        // x-empathy.im.mentioned for multi-user, so we're good here
+        if (appName == 'Empathy' && hints['category'] == 'im.received') {
             // Ignore replacesId since we already sent back a
             // NotificationClosed for that id.
             id = this._nextNotificationId++;
@@ -330,19 +308,6 @@ const FdoNotificationDaemon = new Lang.Class({
         return invocation.return_value(GLib.Variant.new('(u)', [id]));
     },
 
-    _makeButton: function(id, label, useActionIcons) {
-        let button = new St.Button({ can_focus: true });
-        let iconName = id.endsWith('-symbolic') ? id : id + '-symbolic';
-        if (useActionIcons && Gtk.IconTheme.get_default().has_icon(iconName)) {
-            button.add_style_class_name('notification-icon-button');
-            button.child = new St.Icon({ icon_name: iconName });
-        } else {
-            button.add_style_class_name('notification-button');
-            button.label = label;
-        }
-        return button;
-    },
-
     _notifyForSource: function(source, ndata) {
         let [id, icon, summary, body, actions, hints, notification] =
             [ndata.id, ndata.icon, ndata.summary, ndata.body,
@@ -370,13 +335,8 @@ const FdoNotificationDaemon = new Lang.Class({
                 }));
         }
 
-        // Mark music notifications so they can be shown in the screen shield
-        notification.isMusic = (ndata.hints['category'] == 'x-gnome.music');
-
         let gicon = this._iconForNotificationData(icon, hints);
         let gimage = this._imageForNotificationData(hints);
-
-        let image = null;
 
         // If an icon is not specified, we use 'image-data' or 'image-path' hint for an icon
         // and don't show a large image. There are currently many applications that use
@@ -384,12 +344,8 @@ const FdoNotificationDaemon = new Lang.Class({
         // the 'image-data' hint. These applications don't typically pass in 'app_icon'
         // argument to Notify() and actually expect the pixbuf to be shown as an icon.
         // So the logic here does the right thing for this case. If both an icon and either
-        // one of 'image-data' or 'image-path' are specified, we show both an icon and
-        // a large image.
-        if (gicon && gimage)
-            image = new St.Icon({ gicon: gimage,
-                                  icon_size: notification.IMAGE_SIZE });
-        else if (!gicon && gimage)
+        // one of 'image-data' or 'image-path' are specified, the icon and takes precedence.
+        if (!gicon && gimage)
             gicon = gimage;
         else if (!gicon)
             gicon = this._fallbackIconForNotificationData(hints);
@@ -399,31 +355,27 @@ const FdoNotificationDaemon = new Lang.Class({
                                              clear: true,
                                              soundFile: hints['sound-file'],
                                              soundName: hints['sound-name'] });
-        notification.setImage(image);
 
         let hasDefaultAction = false;
 
         if (actions.length) {
-            let useActionIcons = (hints['action-icons'] == true);
-
             for (let i = 0; i < actions.length - 1; i += 2) {
                 let [actionId, label] = [actions[i], actions[i+1]];
-                if (actionId == 'default') {
+                if (actionId == 'default')
                     hasDefaultAction = true;
-                } else {
-                    notification.addButton(this._makeButton(actionId, label, useActionIcons), Lang.bind(this, function() {
+                else
+                    notification.addAction(label, Lang.bind(this, function() {
                         this._emitActionInvoked(ndata.id, actionId);
                     }));
-                }
             }
         }
 
         if (hasDefaultAction) {
-            notification.connect('clicked', Lang.bind(this, function() {
+            notification.connect('activated', Lang.bind(this, function() {
                 this._emitActionInvoked(ndata.id, 'default');
             }));
         } else {
-            notification.connect('clicked', Lang.bind(this, function() {
+            notification.connect('activated', Lang.bind(this, function() {
                 source.open();
             }));
         }
@@ -460,7 +412,7 @@ const FdoNotificationDaemon = new Lang.Class({
     GetCapabilities: function() {
         return [
             'actions',
-            'action-icons',
+            // 'action-icons',
             'body',
             // 'body-hyperlinks',
             // 'body-images',
@@ -503,20 +455,6 @@ const FdoNotificationDaemon = new Lang.Class({
     _emitActionInvoked: function(id, action) {
         this._dbusImpl.emit_signal('ActionInvoked',
                                    GLib.Variant.new('(us)', [id, action]));
-    },
-
-    _onTrayIconAdded: function(o, icon) {
-        let wmClass = icon.wm_class ? icon.wm_class.toLowerCase() : '';
-        if (STANDARD_TRAY_ICON_IMPLEMENTATIONS[wmClass] !== undefined)
-            return;
-
-        let source = this._getSource(icon.title || icon.wm_class || C_("program", "Unknown"), icon.pid, null, null, icon);
-    },
-
-    _onTrayIconRemoved: function(o, icon) {
-        let source = this._lookupSource(null, icon.pid, true);
-        if (source)
-            source.destroy();
     }
 });
 
@@ -524,10 +462,9 @@ const FdoNotificationDaemonSource = new Lang.Class({
     Name: 'FdoNotificationDaemonSource',
     Extends: MessageTray.Source,
 
-    _init: function(title, pid, sender, trayIcon, appId) {
+    _init: function(title, pid, sender, appId) {
         // Need to set the app before chaining up, so
         // methods called from the parent constructor can find it
-        this.trayIcon = trayIcon;
         this.pid = pid;
         this.app = this._getApp(appId);
 
@@ -547,12 +484,6 @@ const FdoNotificationDaemonSource = new Lang.Class({
                                                               Lang.bind(this, this._onNameVanished));
         else
             this._nameWatcherId = 0;
-
-        if (this.trayIcon) {
-            // Try again finding the app, using the WM_CLASS from the tray icon
-            this._setSummaryIcon(this.trayIcon);
-            this.useNotificationIcon = false;
-        }
     },
 
     _createPolicy: function() {
@@ -570,15 +501,14 @@ const FdoNotificationDaemonSource = new Lang.Class({
         // of which аre removed from DBus immediately.
         // Sender being removed from DBus would normally result in a tray icon being removed,
         // so allow the code path that handles the tray icon being removed to handle that case.
-        if (!this.trayIcon && this.app)
+        if (this.app)
             this.destroy();
     },
 
     processNotification: function(notification, gicon) {
         if (gicon)
             this._gicon = gicon;
-        if (!this.trayIcon)
-            this.iconUpdated();
+        this.iconUpdated();
 
         let tracker = Shell.WindowTracker.get_default();
         if (notification.resident && this.app && tracker.focus_app == this.app)
@@ -587,45 +517,12 @@ const FdoNotificationDaemonSource = new Lang.Class({
             this.notify(notification);
     },
 
-    handleSummaryClick: function(button) {
-        if (!this.trayIcon)
-            return false;
-
-        let event = Clutter.get_current_event();
-
-        // Left clicks are passed through only where there aren't unacknowledged
-        // notifications, so it possible to open them in summary mode; right
-        // clicks are always forwarded, as the right click menu is not useful for
-        // tray icons
-        if (button == 1 &&
-            this.notifications.length > 0)
-            return false;
-
-        let id = global.stage.connect('deactivate', Lang.bind(this, function () {
-            global.stage.disconnect(id);
-            this.trayIcon.click(event);
-        }));
-
-        Main.overview.hide();
-        return true;
-    },
-
     _getApp: function(appId) {
         let app;
 
         app = Shell.WindowTracker.get_default().get_app_from_pid(this.pid);
         if (app != null)
             return app;
-
-        if (this.trayIcon) {
-            app = Shell.AppSystem.get_default().lookup_startup_wmclass(this.trayIcon.wm_class);
-            if (app != null)
-                return app;
-
-            app = Shell.AppSystem.get_default().lookup_desktop_wmclass(this.trayIcon.wm_class);
-            if (app != null)
-                return app;
-        }
 
         if (appId) {
             app = Shell.AppSystem.get_default().lookup_app(appId + '.desktop');
@@ -651,17 +548,13 @@ const FdoNotificationDaemonSource = new Lang.Class({
         this.destroyNonResidentNotifications();
     },
 
-    _lastNotificationRemoved: function() {
-        if (!this.trayIcon)
-            this.destroy();
-    },
-
     openApp: function() {
         if (this.app == null)
             return;
 
         this.app.activate();
         Main.overview.hide();
+        Main.panel.closeCalendar();
     },
 
     destroy: function() {
@@ -674,11 +567,7 @@ const FdoNotificationDaemonSource = new Lang.Class({
     },
 
     createIcon: function(size) {
-        if (this.trayIcon) {
-            return new Clutter.Clone({ width: size,
-                                       height: size,
-                                       source: this.trayIcon });
-        } else if (this.app) {
+        if (this.app) {
             return this.app.create_icon_texture(size);
         } else if (this._gicon) {
             return new St.Icon({ gicon: this._gicon,
@@ -753,7 +642,7 @@ const GtkNotificationDaemonNotification = new Lang.Class({
         this._activateAction(action.unpack(), actionTarget);
     },
 
-    _onClicked: function() {
+    activate: function() {
         this._activateAction(this._defaultAction, this._defaultActionTarget);
         this.parent();
     },
@@ -820,11 +709,17 @@ const GtkNotificationDaemonAppSource = new Lang.Class({
     activateAction: function(actionId, target) {
         let app = this._createApp();
         app.ActivateActionRemote(actionId, target ? [target] : [], getPlatformData());
+
+        Main.overview.hide();
+        Main.panel.closeCalendar();
     },
 
     open: function() {
         let app = this._createApp();
         app.ActivateRemote(getPlatformData());
+
+        Main.overview.hide();
+        Main.panel.closeCalendar();
     },
 
     addNotification: function(notificationId, notificationParams, showBanner) {

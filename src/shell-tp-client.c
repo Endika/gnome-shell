@@ -21,10 +21,6 @@ struct _ShellTpClientPrivate
   ShellTpClientHandleChannelsImpl handle_channels_impl;
   gpointer user_data_handle_channels;
   GDestroyNotify destroy_handle_channels;
-
-  ShellTpClientContactListChangedImpl contact_list_changed_impl;
-  gpointer user_data_contact_list_changed;
-  GDestroyNotify destroy_contact_list_changed;
 };
 
 /**
@@ -83,16 +79,6 @@ struct _ShellTpClientPrivate
  * Signature of the implementation of the HandleChannels method.
  */
 
-/**
- * ShellTpClientContactListChangedImpl:
- * @connection: a #TpConnection having %TP_CONNECTION_FEATURE_CORE prepared
- * if possible
- * @added: (element-type TelepathyGLib.Contact): a #GPtrArray of added #TpContact
- * @removed: (element-type TelepathyGLib.Contact): a #GPtrArray of removed #TpContact
- *
- * Signature of the implementation of the ContactListChanged method.
- */
-
 static void
 shell_tp_client_init (ShellTpClient *self)
 {
@@ -116,30 +102,6 @@ shell_tp_client_init (ShellTpClient *self)
 
   /* Approver */
   tp_base_client_add_approver_filter (TP_BASE_CLIENT (self), filter);
-
-  /* Approve room invitations. We don't handle or observe room channels so
-   * just register this filter for the approver. */
-  tp_base_client_take_approver_filter (TP_BASE_CLIENT (self), tp_asv_new (
-      TP_PROP_CHANNEL_CHANNEL_TYPE, G_TYPE_STRING,
-        TP_IFACE_CHANNEL_TYPE_TEXT,
-      TP_PROP_CHANNEL_TARGET_HANDLE_TYPE, G_TYPE_UINT,
-        TP_HANDLE_TYPE_ROOM,
-      NULL));
-
-  /* Approve calls. We let Empathy handle the call itself. */
-  tp_base_client_take_approver_filter (TP_BASE_CLIENT (self),
-      tp_asv_new (
-        TP_PROP_CHANNEL_CHANNEL_TYPE, G_TYPE_STRING, TP_IFACE_CHANNEL_TYPE_CALL,
-        TP_PROP_CHANNEL_TARGET_HANDLE_TYPE, G_TYPE_UINT, TP_HANDLE_TYPE_CONTACT,
-        NULL));
-
-  /* Approve file transfers. We let Empathy handle the transfer itself. */
-  tp_base_client_take_approver_filter (TP_BASE_CLIENT (self),
-      tp_asv_new (
-        TP_PROP_CHANNEL_CHANNEL_TYPE, G_TYPE_STRING,
-          TP_IFACE_CHANNEL_TYPE_FILE_TRANSFER,
-        TP_PROP_CHANNEL_TARGET_HANDLE_TYPE, G_TYPE_UINT, TP_HANDLE_TYPE_CONTACT,
-        NULL));
 
   /* Handler */
   tp_base_client_add_handler_filter (TP_BASE_CLIENT (self), filter);
@@ -226,13 +188,6 @@ shell_tp_client_dispose (GObject *object)
       self->priv->user_data_handle_channels = NULL;
     }
 
-  if (self->priv->destroy_contact_list_changed != NULL)
-    {
-      self->priv->destroy_contact_list_changed (self->priv->user_data_contact_list_changed);
-      self->priv->destroy_contact_list_changed = NULL;
-      self->priv->user_data_contact_list_changed = NULL;
-    }
-
   if (dispose != NULL)
     dispose (object);
 }
@@ -289,41 +244,4 @@ shell_tp_client_set_handle_channels_func (ShellTpClient *self,
   self->priv->handle_channels_impl = handle_channels_impl;
   self->priv->user_data_handle_channels = user_data;
   self->priv->destroy_handle_channels = destroy;
-}
-
-void
-shell_tp_client_set_contact_list_changed_func (ShellTpClient *self,
-    ShellTpClientContactListChangedImpl contact_list_changed_impl,
-    gpointer user_data,
-    GDestroyNotify destroy)
-{
-  g_assert (self->priv->contact_list_changed_impl == NULL);
-
-  self->priv->contact_list_changed_impl = contact_list_changed_impl;
-  self->priv->user_data_handle_channels = user_data;
-  self->priv->destroy_handle_channels = destroy;
-}
-
-static void
-on_contact_list_changed (TpConnection *conn,
-                         GPtrArray *added,
-                         GPtrArray *removed,
-                         gpointer user_data)
-{
-  ShellTpClient *self = (ShellTpClient *) user_data;
-
-  g_assert (self->priv->contact_list_changed_impl != NULL);
-
-  self->priv->contact_list_changed_impl (conn,
-      added, removed,
-      self->priv->user_data_contact_list_changed);
-}
-
-void
-shell_tp_client_grab_contact_list_changed (ShellTpClient *self,
-                                           TpConnection *conn)
-{
-  g_signal_connect (conn, "contact-list-changed",
-                    G_CALLBACK (on_contact_list_changed),
-                    self);
 }

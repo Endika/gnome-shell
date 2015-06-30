@@ -28,12 +28,18 @@
 #include <meta/meta-shaped-texture.h>
 #include <meta/meta-cursor-tracker.h>
 
+#ifdef HAVE_SYSTEMD
+#include <systemd/sd-journal.h>
+#include <errno.h>
+#include <unistd.h>
+#endif
+
 /* Memory report bits */
 #ifdef HAVE_MALLINFO
 #include <malloc.h>
 #endif
 
-#ifdef __OpenBSD__
+#if defined __OpenBSD__ || defined __FreeBSD__
 #include <sys/sysctl.h>
 #endif
 
@@ -1273,6 +1279,30 @@ shell_global_reexec_self (ShellGlobal *global)
   }
 
   g_ptr_array_add (arr, NULL);
+#elif defined __FreeBSD__
+  char *buf;
+  char *buf_p;
+  char *buf_end;
+  gint mib[] = { CTL_KERN, KERN_PROC, KERN_PROC_ARGS, getpid() };
+
+  if (sysctl (mib, G_N_ELEMENTS (mib), NULL, &len, NULL, 0) == -1)
+    return;
+
+  buf = g_malloc0 (len);
+
+  if (sysctl (mib, G_N_ELEMENTS (mib), buf, &len, NULL, 0) == -1) {
+    g_warning ("failed to get command line args: %d", errno);
+    g_free (buf);
+    return;
+  }
+
+  buf_end = buf+len;
+  arr = g_ptr_array_new ();
+  /* The value returned by sysctl is NUL-separated */
+  for (buf_p = buf; buf_p < buf_end; buf_p = buf_p + strlen (buf_p) + 1)
+    g_ptr_array_add (arr, buf_p);
+
+  g_ptr_array_add (arr, NULL);
 #else
   return;
 #endif
@@ -1291,10 +1321,56 @@ shell_global_reexec_self (ShellGlobal *global)
   execvp (arr->pdata[0], (char**)arr->pdata);
   g_warning ("failed to reexec: %s", g_strerror (errno));
   g_ptr_array_free (arr, TRUE);
-#if defined __linux__
+#if defined __linux__ || defined __FreeBSD__
   g_free (buf);
 #elif defined __OpenBSD__
   g_free (args);
+#endif
+}
+
+/**
+ * shell_global_log_structured:
+ * @message: A message to print
+ * @keys: (allow-none) (array zero-terminated=1) (element-type utf8): Optional structured data
+ *
+ * Log structured data in an operating-system specific fashion.  The
+ * parameter @opts should be an array of UTF-8 KEY=VALUE strings.
+ * This function does not support binary data.  See
+ * http://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html
+ * or more information about fields that can be used on a systemd
+ * system.
+ *
+ */
+void
+shell_global_log_structured (const char *message,
+                             const char *const *keys)
+{
+#ifdef HAVE_SYSTEMD
+    const char *const*iter;
+    char *msgkey;
+    guint i, n_opts;
+    struct iovec *iovs;
+
+    for (n_opts = 0, iter = keys; *iter; iter++, n_opts++)
+        ;
+
+    n_opts++; /* Add one for MESSAGE= */
+    iovs = g_alloca (sizeof (struct iovec) * n_opts);
+
+    for (i = 0, iter = keys; *iter; iter++, i++) {
+        iovs[i].iov_base = (char*)keys[i];
+        iovs[i].iov_len = strlen (keys[i]);
+    }
+    g_assert(i == n_opts-1);
+    msgkey = g_strconcat ("MESSAGE=", message, NULL);
+    iovs[i].iov_base = msgkey;
+    iovs[i].iov_len = strlen (msgkey);
+
+    // The code location isn't useful since we're wrapping
+    sd_journal_sendv (iovs, n_opts);
+    g_free (msgkey);
+#else
+    g_print ("%s\n", message);
 #endif
 }
 
@@ -1388,7 +1464,7 @@ shell_global_sync_pointer (ShellGlobal *global)
 
   event.type = CLUTTER_MOTION;
   event.time = shell_global_get_current_time (global);
-  event.flags = 0;
+  event.flags = CLUTTER_EVENT_FLAG_SYNTHETIC;
   event.stage = global->stage;
   event.x = x;
   event.y = y;

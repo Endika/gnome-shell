@@ -152,7 +152,7 @@ const ViewSelector = new Lang.Class({
 
         this._workspacesDisplay = new WorkspacesView.WorkspacesDisplay();
         this._workspacesPage = this._addPage(this._workspacesDisplay.actor,
-                                             _("Windows"), 'emblem-documents-symbolic');
+                                             _("Windows"), 'focus-windows-symbolic');
 
         this.appDisplay = new AppDisplay.AppDisplay();
         this._appsPage = this._addPage(this.appDisplay.actor,
@@ -214,10 +214,13 @@ const ViewSelector = new Lang.Class({
                               Shell.ActionMode.OVERVIEW,
                               Lang.bind(Main.overview, Main.overview.toggle));
 
-        let gesture;
-
-        gesture = new EdgeDragAction.EdgeDragAction(St.Side.LEFT,
-                                                    Shell.ActionMode.NORMAL);
+        let side;
+        if (Clutter.get_default_text_direction() == Clutter.TextDirection.RTL)
+            side = St.Side.RIGHT;
+        else
+            side = St.Side.LEFT;
+        let gesture = new EdgeDragAction.EdgeDragAction(side,
+                                                        Shell.ActionMode.NORMAL);
         gesture.connect('activated', Lang.bind(this, function() {
             if (Main.overview.visible)
                 Main.overview.hide();
@@ -552,7 +555,9 @@ const ViewSelector = new Lang.Class({
     _onCapturedEvent: function(actor, event) {
         if (event.type() == Clutter.EventType.BUTTON_PRESS) {
             let source = event.get_source();
-            if (source != this._text && this._text.text == '' &&
+            if (source != this._text &&
+                this._text.text == '' &&
+                !this._text.has_preedit () &&
                 !Main.layoutManager.keyboardBox.contains(source)) {
                 // the user clicked outside after activating the entry, but
                 // with no search term entered and no keyboard button pressed

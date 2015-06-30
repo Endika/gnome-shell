@@ -205,6 +205,13 @@ const SearchResultsBase = new Lang.Class({
                     callback(false);
                     return;
                 }
+                if (metas.some(function(meta) {
+                    return !meta.name || !meta.id;
+                })) {
+                    log('Invalid result meta returned from search provider ' + this.provider.id);
+                    callback(false);
+                    return;
+                }
 
                 metasNeeded.forEach(Lang.bind(this, function(resultId, i) {
                     let meta = metas[i];
@@ -409,6 +416,7 @@ const SearchResults = new Lang.Class({
 
         this._searchSettings = new Gio.Settings({ schema_id: SEARCH_PROVIDERS_SCHEMA });
         this._searchSettings.connect('changed::disabled', Lang.bind(this, this._reloadRemoteProviders));
+        this._searchSettings.connect('changed::enabled', Lang.bind(this, this._reloadRemoteProviders));
         this._searchSettings.connect('changed::disable-external', Lang.bind(this, this._reloadRemoteProviders));
         this._searchSettings.connect('changed::sort-order', Lang.bind(this, this._reloadRemoteProviders));
 
@@ -427,7 +435,7 @@ const SearchResults = new Lang.Class({
             this._unregisterProvider(provider);
         }));
 
-        RemoteSearch.loadRemoteSearchProviders(Lang.bind(this, function(providers) {
+        RemoteSearch.loadRemoteSearchProviders(this._searchSettings, Lang.bind(this, function(providers) {
             providers.forEach(Lang.bind(this, this._registerProvider));
         }));
     },

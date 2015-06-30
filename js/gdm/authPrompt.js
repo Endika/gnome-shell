@@ -140,7 +140,7 @@ const AuthPrompt = new Lang.Class({
     },
 
     _initButtons: function() {
-        this.cancelButton = new St.Button({ style_class: 'modal-dialog-button',
+        this.cancelButton = new St.Button({ style_class: 'modal-dialog-button button',
                                             button_mask: St.ButtonMask.ONE | St.ButtonMask.THREE,
                                             reactive: true,
                                             can_focus: true,
@@ -162,7 +162,7 @@ const AuthPrompt = new Lang.Class({
                               y_fill: false,
                               x_align: St.Align.END,
                               y_align: St.Align.MIDDLE });
-        this.nextButton = new St.Button({ style_class: 'modal-dialog-button',
+        this.nextButton = new St.Button({ style_class: 'modal-dialog-button button',
                                           button_mask: St.ButtonMask.ONE | St.ButtonMask.THREE,
                                           reactive: true,
                                           can_focus: true,
@@ -194,17 +194,15 @@ const AuthPrompt = new Lang.Class({
     },
 
     _onAskQuestion: function(verifier, serviceName, question, passwordChar) {
-        if (this._preemptiveAnswer) {
-            if (this._queryingService)
-                this._userVerifier.answerQuery(this._queryingService, this._preemptiveAnswer);
-            this._preemptiveAnswer = null;
-            return;
-        }
-
         if (this._queryingService)
             this.clear();
 
         this._queryingService = serviceName;
+        if (this._preemptiveAnswer) {
+            this._userVerifier.answerQuery(this._queryingService, this._preemptiveAnswer);
+            this._preemptiveAnswer = null;
+            return;
+        }
         this.setPasswordChar(passwordChar);
         this.setQuestion(question);
 

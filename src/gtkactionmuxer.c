@@ -24,6 +24,8 @@
 #include "gtkactionobservable.h"
 #include "gtkactionobserver.h"
 
+#include <clutter/clutter.h>
+
 #include <string.h>
 
 /**
@@ -396,6 +398,26 @@ gtk_action_muxer_query_action (GActionGroup        *action_group,
   return FALSE;
 }
 
+static GVariant *
+get_platform_data (void)
+{
+  gchar time[32];
+  GVariantBuilder *builder;
+  GVariant *result;
+
+  g_snprintf (time, 32, "_TIME%d", clutter_get_current_event_time ());
+
+  builder = g_variant_builder_new (G_VARIANT_TYPE ("a{sv}"));
+
+  g_variant_builder_add (builder, "{sv}", "desktop-startup-id",
+                         g_variant_new_string (time));
+
+  result = g_variant_builder_end (builder);
+  g_variant_builder_unref (builder);
+
+  return result;
+}
+
 static void
 gtk_action_muxer_activate_action (GActionGroup *action_group,
                                   const gchar  *action_name,
@@ -408,7 +430,14 @@ gtk_action_muxer_activate_action (GActionGroup *action_group,
   group = gtk_action_muxer_find_group (muxer, action_name, &unprefixed_name);
 
   if (group)
-    g_action_group_activate_action (group->group, unprefixed_name, parameter);
+    {
+      if (G_IS_REMOTE_ACTION_GROUP (group->group))
+	g_remote_action_group_activate_action_full (G_REMOTE_ACTION_GROUP (group->group),
+						    unprefixed_name, parameter,
+						    get_platform_data ());
+      else
+	g_action_group_activate_action (group->group, unprefixed_name, parameter);
+    }
   else if (muxer->parent)
     g_action_group_activate_action (G_ACTION_GROUP (muxer->parent), action_name, parameter);
 }
@@ -425,7 +454,15 @@ gtk_action_muxer_change_action_state (GActionGroup *action_group,
   group = gtk_action_muxer_find_group (muxer, action_name, &unprefixed_name);
 
   if (group)
-    g_action_group_change_action_state (group->group, unprefixed_name, state);
+    {
+      if (G_IS_REMOTE_ACTION_GROUP (group->group))
+        g_remote_action_group_change_action_state_full (G_REMOTE_ACTION_GROUP (group->group),
+                                                        unprefixed_name,
+                                                        state,
+                                                        get_platform_data ());
+      else
+        g_action_group_change_action_state (group->group, unprefixed_name, state);
+    }
   else if (muxer->parent)
     g_action_group_change_action_state (G_ACTION_GROUP (muxer->parent), action_name, state);
 }

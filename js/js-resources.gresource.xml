@@ -57,6 +57,7 @@
     <file>ui/layout.js</file>
     <file>ui/lightbox.js</file>
     <file>ui/lookingGlass.js</file>
+    <file>ui/legacyTray.js</file>
     <file>ui/magnifier.js</file>
     <file>ui/magnifierDBus.js</file>
     <file>ui/main.js</file>
@@ -64,6 +65,7 @@
     <file>ui/modalDialog.js</file>
     <file>ui/notificationDaemon.js</file>
     <file>ui/osdWindow.js</file>
+    <file>ui/osdMonitorLabeler.js</file>
     <file>ui/overview.js</file>
     <file>ui/overviewControls.js</file>
     <file>ui/panel.js</file>

@@ -24,11 +24,11 @@ const AutorunSetting = {
 };
 
 // misc utils
-function shouldAutorunMount(mount, forTransient) {
+function shouldAutorunMount(mount) {
     let root = mount.get_root();
     let volume = mount.get_volume();
 
-    if (!volume || (!volume.allowAutorun && forTransient))
+    if (!volume || !volume.allowAutorun)
         return false;
 
     if (root.is_native() && isMountRootHidden(root))
@@ -167,50 +167,17 @@ const AutorunManager = new Lang.Class({
         this._session = new GnomeSession.SessionManager();
         this._volumeMonitor = Gio.VolumeMonitor.get();
 
-        this._transDispatcher = new AutorunTransientDispatcher(this);
-    },
-
-    _ensureResidentSource: function() {
-        if (this._residentSource)
-            return;
-
-        this._residentSource = new AutorunResidentSource(this);
-        let destroyId = this._residentSource.connect('destroy', Lang.bind(this, function() {
-            this._residentSource.disconnect(destroyId);
-            this._residentSource = null;
-        }));
+        this._dispatcher = new AutorunDispatcher(this);
     },
 
     enable: function() {
-        this._scanMounts();
-
         this._mountAddedId = this._volumeMonitor.connect('mount-added', Lang.bind(this, this._onMountAdded));
         this._mountRemovedId = this._volumeMonitor.connect('mount-removed', Lang.bind(this, this._onMountRemoved));
     },
 
     disable: function() {
-        if (this._residentSource)
-            this._residentSource.destroy();
         this._volumeMonitor.disconnect(this._mountAddedId);
         this._volumeMonitor.disconnect(this._mountRemovedId);
-    },
-
-    _processMount: function(mount, hotplug) {
-        let discoverer = new ContentTypeDiscoverer(Lang.bind(this, function(mount, apps, contentTypes) {
-            this._ensureResidentSource();
-            this._residentSource.addMount(mount, apps);
-
-            if (hotplug)
-                this._transDispatcher.addMount(mount, apps, contentTypes);
-        }));
-        discoverer.guessContentTypes(mount);
-    },
-
-    _scanMounts: function() {
-        let mounts = this._volumeMonitor.get_mounts();
-        mounts.forEach(Lang.bind(this, function(mount) {
-            this._processMount(mount, false);
-        }));
     },
 
     _onMountAdded: function(monitor, mount) {
@@ -219,224 +186,19 @@ const AutorunManager = new Lang.Class({
         if (!this._session.SessionIsActive)
             return;
 
-        this._processMount(mount, true);
+        let discoverer = new ContentTypeDiscoverer(Lang.bind(this, function(mount, apps, contentTypes) {
+            this._dispatcher.addMount(mount, apps, contentTypes);
+        }));
+        discoverer.guessContentTypes(mount);
     },
 
     _onMountRemoved: function(monitor, mount) {
-        this._transDispatcher.removeMount(mount);
-        if (this._residentSource)
-            this._residentSource.removeMount(mount);
-    },
-
-    ejectMount: function(mount) {
-        let mountOp = new ShellMountOperation.ShellMountOperation(mount);
-
-        // first, see if we have a drive
-        let drive = mount.get_drive();
-        let volume = mount.get_volume();
-
-        if (drive &&
-            drive.get_start_stop_type() == Gio.DriveStartStopType.SHUTDOWN &&
-            drive.can_stop()) {
-            drive.stop(0, mountOp.mountOp, null,
-                       Lang.bind(this, this._onStop));
-        } else {
-            if (mount.can_eject()) {
-                mount.eject_with_operation(0, mountOp.mountOp, null,
-                                           Lang.bind(this, this._onEject));
-            } else if (volume && volume.can_eject()) {
-                volume.eject_with_operation(0, mountOp.mountOp, null,
-                                            Lang.bind(this, this._onEject));
-            } else if (drive && drive.can_eject()) {
-                drive.eject_with_operation(0, mountOp.mountOp, null,
-                                           Lang.bind(this, this._onEject));
-            } else if (mount.can_unmount()) {
-                mount.unmount_with_operation(0, mountOp.mountOp, null,
-                                             Lang.bind(this, this._onUnmount));
-            }
-        }
-    },
-
-    _onUnmount: function(mount, res) {
-        try {
-            mount.unmount_with_operation_finish(res);
-        } catch (e) {
-            if (!e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.FAILED_HANDLED))
-                log('Unable to eject the mount ' + mount.get_name() 
-                    + ': ' + e.toString());
-        }
-    },
-
-    _onEject: function(source, res) {
-        try {
-            source.eject_with_operation_finish(res);
-        } catch (e) {
-            if (!e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.FAILED_HANDLED))
-                log('Unable to eject the drive ' + source.get_name()
-                    + ': ' + e.toString());
-        }
-    },
-
-    _onStop: function(drive, res) {
-        try {
-            drive.stop_finish(res);
-        } catch (e) {
-            if (!e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.FAILED_HANDLED))
-                log('Unable to stop the drive ' + drive.get_name() 
-                    + ': ' + e.toString());
-        }
-    },
-});
-
-const AutorunResidentSource = new Lang.Class({
-    Name: 'AutorunResidentSource',
-    Extends: MessageTray.Source,
-
-    _init: function(manager) {
-        this.parent(_("Removable Devices"), 'media-removable');
-        this.resident = true;
-
-        this._mounts = [];
-
-        this._manager = manager;
-        this._notification = new AutorunResidentNotification(this._manager, this);
-    },
-
-    _createPolicy: function() {
-        return new MessageTray.NotificationPolicy({ showInLockScreen: false });
-    },
-
-    buildRightClickMenu: function() {
-        return null;
-    },
-
-    addMount: function(mount, apps) {
-        if (!shouldAutorunMount(mount, false))
-            return;
-
-        let filtered = this._mounts.filter(function (element) {
-            return (element.mount == mount);
-        });
-
-        if (filtered.length != 0)
-            return;
-
-        let element = { mount: mount, apps: apps };
-        this._mounts.push(element);
-        this._redisplay();
-    },
-
-    removeMount: function(mount) {
-        this._mounts =
-            this._mounts.filter(function (element) {
-                return (element.mount != mount);
-            });
-
-        this._redisplay();
-    },
-
-    _redisplay: function() {
-        if (this._mounts.length == 0) {
-            this._notification.destroy();
-            this.destroy();
-
-            return;
-        }
-
-        this._notification.updateForMounts(this._mounts);
-
-        // add ourselves as a source, and push the notification
-        if (!Main.messageTray.contains(this)) {
-            Main.messageTray.add(this);
-            this.pushNotification(this._notification);
-        }
+        this._dispatcher.removeMount(mount);
     }
 });
 
-const AutorunResidentNotification = new Lang.Class({
-    Name: 'AutorunResidentNotification',
-    Extends: MessageTray.Notification,
-
-    _init: function(manager, source) {
-        this.parent(source, source.title, null, { customContent: true });
-
-        // set the notification as resident
-        this.setResident(true);
-
-        this._layout = new St.BoxLayout ({ style_class: 'hotplug-resident-box',
-                                           vertical: true });
-        this._manager = manager;
-
-        this.addActor(this._layout,
-                      { x_expand: true,
-                        x_fill: true });
-    },
-
-    updateForMounts: function(mounts) {
-        // remove all the layout content
-        this._layout.destroy_all_children();
-
-        for (let idx = 0; idx < mounts.length; idx++) {
-            let element = mounts[idx];
-
-            let actor = this._itemForMount(element.mount, element.apps);
-            this._layout.add(actor, { x_fill: true,
-                                      expand: true });
-        }
-    },
-
-    _itemForMount: function(mount, apps) {
-        let item = new St.BoxLayout();
-
-        // prepare the mount button content
-        let mountLayout = new St.BoxLayout();
-
-        let mountIcon = new St.Icon({ gicon: mount.get_icon(),
-                                      style_class: 'hotplug-resident-mount-icon' });
-        mountLayout.add_actor(mountIcon);
-
-        let labelBin = new St.Bin({ y_align: St.Align.MIDDLE });
-        let mountLabel =
-            new St.Label({ text: mount.get_name(),
-                           style_class: 'hotplug-resident-mount-label',
-                           track_hover: true,
-                           reactive: true });
-        labelBin.add_actor(mountLabel);
-        mountLayout.add_actor(labelBin);
-
-        let mountButton = new St.Button({ child: mountLayout,
-                                          x_align: St.Align.START,
-                                          x_fill: true,
-                                          style_class: 'hotplug-resident-mount',
-                                          button_mask: St.ButtonMask.ONE });
-        item.add(mountButton, { x_align: St.Align.START,
-                                expand: true });
-
-        let ejectIcon = 
-            new St.Icon({ icon_name: 'media-eject-symbolic',
-                          style_class: 'hotplug-resident-eject-icon' });
-
-        let ejectButton =
-            new St.Button({ style_class: 'hotplug-resident-eject-button',
-                            button_mask: St.ButtonMask.ONE,
-                            child: ejectIcon });
-        item.add(ejectButton, { x_align: St.Align.END });
-
-        // now connect signals
-        mountButton.connect('clicked', Lang.bind(this, function(actor, event) {
-            startAppForMount(apps[0], mount);
-        }));
-
-        ejectButton.connect('clicked', Lang.bind(this, function() {
-            this._manager.ejectMount(mount);
-        }));
-
-        return item;
-    },
-});
-
-const AutorunTransientDispatcher = new Lang.Class({
-    Name: 'AutorunTransientDispatcher',
+const AutorunDispatcher = new Lang.Class({
+    Name: 'AutorunDispatcher',
 
     _init: function(manager) {
         this._manager = manager;
@@ -482,7 +244,7 @@ const AutorunTransientDispatcher = new Lang.Class({
             return;
      
         // add a new source
-        this._sources.push(new AutorunTransientSource(this._manager, mount, apps));
+        this._sources.push(new AutorunSource(this._manager, mount, apps));
     },
 
     addMount: function(mount, apps, contentTypes) {
@@ -491,7 +253,7 @@ const AutorunTransientDispatcher = new Lang.Class({
             return;
 
         // if the mount doesn't want to be autorun, return
-        if (!shouldAutorunMount(mount, true))
+        if (!shouldAutorunMount(mount))
             return;
 
         let setting = this._getAutorunSettingForType(contentTypes[0]);
@@ -531,8 +293,8 @@ const AutorunTransientDispatcher = new Lang.Class({
     }
 });
 
-const AutorunTransientSource = new Lang.Class({
-    Name: 'AutorunTransientSource',
+const AutorunSource = new Lang.Class({
+    Name: 'AutorunSource',
     Extends: MessageTray.Source,
 
     _init: function(manager, mount, apps) {
@@ -542,7 +304,7 @@ const AutorunTransientSource = new Lang.Class({
 
         this.parent(mount.get_name());
 
-        this._notification = new AutorunTransientNotification(this._manager, this);
+        this._notification = new AutorunNotification(this._manager, this);
 
         // add ourselves as a source, and popup the notification
         Main.messageTray.add(this);
@@ -554,35 +316,31 @@ const AutorunTransientSource = new Lang.Class({
     }
 });
 
-const AutorunTransientNotification = new Lang.Class({
-    Name: 'AutorunTransientNotification',
+const AutorunNotification = new Lang.Class({
+    Name: 'AutorunNotification',
     Extends: MessageTray.Notification,
 
     _init: function(manager, source) {
-        this.parent(source, source.title, null, { customContent: true });
+        this.parent(source, source.title);
 
         this._manager = manager;
-        this._box = new St.BoxLayout({ style_class: 'hotplug-transient-box',
-                                       vertical: true });
-        this.addActor(this._box);
-
         this._mount = source.mount;
 
-        source.apps.forEach(Lang.bind(this, function (app) {
+        // set the notification to urgent, so that it expands out
+        this.setUrgency(MessageTray.Urgency.CRITICAL);
+    },
+
+    createBanner: function() {
+        let banner = new MessageTray.NotificationBanner(this);
+
+        this.source.apps.forEach(Lang.bind(this, function (app) {
             let actor = this._buttonForApp(app);
 
             if (actor)
-                this._box.add(actor, { x_fill: true,
-                                       x_align: St.Align.START });
+                banner.addButton(actor);
         }));
 
-        this._box.add(this._buttonForEject(), { x_fill: true,
-                                                x_align: St.Align.START });
-
-        // set the notification to transient and urgent, so that it
-        // expands out
-        this.setTransient(true);
-        this.setUrgency(MessageTray.Urgency.CRITICAL);
+        return banner;
     },
 
     _buttonForApp: function(app) {
@@ -600,8 +358,9 @@ const AutorunTransientNotification = new Lang.Class({
         let button = new St.Button({ child: box,
                                      x_fill: true,
                                      x_align: St.Align.START,
+                                     x_expand: true,
                                      button_mask: St.ButtonMask.ONE,
-                                     style_class: 'hotplug-notification-item' });
+                                     style_class: 'hotplug-notification-item button' });
 
         button.connect('clicked', Lang.bind(this, function() {
             startAppForMount(app, this._mount);
@@ -611,29 +370,11 @@ const AutorunTransientNotification = new Lang.Class({
         return button;
     },
 
-    _buttonForEject: function() {
-        let box = new St.BoxLayout();
-        let icon = new St.Icon({ icon_name: 'media-eject-symbolic',
-                                 style_class: 'hotplug-notification-item-icon' });
-        box.add(icon);
+    activate: function() {
+        this.parent();
 
-        let label = new St.Bin({ y_align: St.Align.MIDDLE,
-                                 child: new St.Label
-                                 ({ text: _("Eject") })
-                               });
-        box.add(label);
-
-        let button = new St.Button({ child: box,
-                                     x_fill: true,
-                                     x_align: St.Align.START,
-                                     button_mask: St.ButtonMask.ONE,
-                                     style_class: 'hotplug-notification-item' });
-
-        button.connect('clicked', Lang.bind(this, function() {
-            this._manager.ejectMount(this._mount);
-        }));
-
-        return button;
+        let app = Gio.app_info_get_default_for_type('inode/directory', false);
+        startAppForMount(app, this._mount);
     }
 });
 

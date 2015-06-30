@@ -1,5 +1,5 @@
 AC_PREREQ(2.63)
-AC_INIT([gnome-shell],[3.15.3],[https://bugzilla.gnome.org/enter_bug.cgi?product=gnome-shell],[gnome-shell])
+AC_INIT([gnome-shell],[3.17.2],[https://bugzilla.gnome.org/enter_bug.cgi?product=gnome-shell],[gnome-shell])
 
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_SRCDIR([src/shell-global.c])
@@ -63,8 +63,8 @@ AC_ARG_ENABLE([systemd],
               [enable_systemd=$enableval],
               [enable_systemd=auto])
 AS_IF([test x$enable_systemd != xno], [
-  AC_MSG_CHECKING([for libsystemd-journal])
-  PKG_CHECK_EXISTS([libsystemd-journal],
+  AC_MSG_CHECKING([for libsystemd])
+  PKG_CHECK_EXISTS([libsystemd],
                    [have_systemd=yes
                     AC_DEFINE([HAVE_SYSTEMD], [1], [Define if we have systemd])],
                    [have_systemd=no])
@@ -73,14 +73,14 @@ AS_IF([test x$enable_systemd != xno], [
 
 AC_MSG_RESULT($enable_systemd)
 
-CLUTTER_MIN_VERSION=1.15.90
+CLUTTER_MIN_VERSION=1.21.5
 GOBJECT_INTROSPECTION_MIN_VERSION=0.10.1
 GJS_MIN_VERSION=1.39.0
-MUTTER_MIN_VERSION=3.15.3
+MUTTER_MIN_VERSION=3.17.2
 GTK_MIN_VERSION=3.15.0
 GIO_MIN_VERSION=2.37.0
 LIBECAL_MIN_VERSION=3.5.3
-LIBEDATASERVER_MIN_VERSION=3.5.3
+LIBEDATASERVER_MIN_VERSION=3.13.90
 TELEPATHY_GLIB_MIN_VERSION=0.17.5
 POLKIT_MIN_VERSION=0.100
 STARTUP_NOTIFICATION_MIN_VERSION=0.11
@@ -97,7 +97,6 @@ SHARED_PCS="gio-unix-2.0 >= $GIO_MIN_VERSION
             gjs-internals-1.0 >= $GJS_MIN_VERSION
             $recorder_modules
             gdk-x11-3.0 libsoup-2.4
-            xtst
             clutter-x11-1.0 >= $CLUTTER_MIN_VERSION
             clutter-glx-1.0 >= $CLUTTER_MIN_VERSION
             libstartup-notification-1.0 >= $STARTUP_NOTIFICATION_MIN_VERSION
@@ -107,7 +106,7 @@ SHARED_PCS="gio-unix-2.0 >= $GIO_MIN_VERSION
             polkit-agent-1 >= $POLKIT_MIN_VERSION
             gcr-base-3 >= $GCR_MIN_VERSION"
 if test x$have_systemd = xyes; then
-  SHARED_PCS="${SHARED_PCS} libsystemd-journal"
+  SHARED_PCS="${SHARED_PCS} libsystemd"
 fi
 
 PKG_CHECK_MODULES(GNOME_SHELL, $SHARED_PCS)
@@ -119,8 +118,7 @@ PKG_CHECK_MODULES(SHELL_PERF_HELPER, gtk+-3.0 gio-2.0)
 PKG_CHECK_MODULES(SHELL_HOTPLUG_SNIFFER, gio-2.0 gdk-pixbuf-2.0)
 PKG_CHECK_MODULES(TRAY, gtk+-3.0)
 PKG_CHECK_MODULES(GVC, libpulse >= $PULSE_MIN_VERS libpulse-mainloop-glib gobject-2.0)
-PKG_CHECK_MODULES(DESKTOP_SCHEMAS, gsettings-desktop-schemas >= 3.7.4)
-PKG_CHECK_MODULES(CARIBOU, caribou-1.0 >= 0.4.8)
+PKG_CHECK_MODULES(DESKTOP_SCHEMAS, gsettings-desktop-schemas >= 3.13.1)
 
 AC_ARG_ENABLE(browser-plugin,
               [AS_HELP_STRING([--enable-browser-plugin],
@@ -242,6 +240,8 @@ AC_PATH_PROG([GDBUS_CODEGEN],[gdbus-codegen],[])
 if test -z "$GDBUS_CODEGEN"; then
   AC_MSG_ERROR([gdbus-codegen not found])
 fi
+
+AC_PATH_PROG([SASS],[sass],[])
 
 AC_CONFIG_FILES([
   Makefile

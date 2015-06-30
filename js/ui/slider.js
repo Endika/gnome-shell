@@ -7,7 +7,7 @@ const Lang = imports.lang;
 const St = imports.gi.St;
 const Signals = imports.signals;
 
-const SLIDER_SCROLL_STEP = 0.05; /* Slider scrolling step in % */
+const SLIDER_SCROLL_STEP = 0.02; /* Slider scrolling step in % */
 
 const Slider = new Lang.Class({
     Name: "Slider",
@@ -197,7 +197,7 @@ const Slider = new Lang.Class({
             let [dx, dy] = event.get_scroll_delta();
             // Even though the slider is horizontal, use dy to match
             // the UP/DOWN above.
-            delta = -dy / 10;
+            delta = -dy * SLIDER_SCROLL_STEP;
         }
 
         this._value = Math.min(Math.max(0, this._value + delta), 1);

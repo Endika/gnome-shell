@@ -12,7 +12,6 @@ const BoxPointer = imports.ui.boxpointer;
 const GrabHelper = imports.ui.grabHelper;
 const Main = imports.ui.main;
 const Params = imports.misc.params;
-const Separator = imports.ui.separator;
 const Tweener = imports.ui.tweener;
 
 const Ornament = {
@@ -91,6 +90,7 @@ const PopupBaseMenuItem = new Lang.Class({
             this.actor.add_style_class_name(params.style_class);
 
         if (this._activatable) {
+            this.actor.connect('button-press-event', Lang.bind(this, this._onButtonPressEvent));
             this.actor.connect('button-release-event', Lang.bind(this, this._onButtonReleaseEvent));
             this.actor.connect('touch-event', Lang.bind(this, this._onTouchEvent));
             this.actor.connect('key-press-event', Lang.bind(this, this._onKeyPressEvent));
@@ -114,15 +114,26 @@ const PopupBaseMenuItem = new Lang.Class({
         this._parent = parent;
     },
 
+    _onButtonPressEvent: function (actor, event) {
+        // This is the CSS active state
+        this.actor.add_style_pseudo_class ('active');
+        return Clutter.EVENT_PROPAGATE;
+    },
+
     _onButtonReleaseEvent: function (actor, event) {
+        this.actor.remove_style_pseudo_class ('active');
         this.activate(event);
         return Clutter.EVENT_STOP;
     },
 
     _onTouchEvent: function (actor, event) {
         if (event.type() == Clutter.EventType.TOUCH_END) {
+            this.actor.remove_style_pseudo_class ('active');
             this.activate(event);
             return Clutter.EVENT_STOP;
+        } else if (event.type() == Clutter.EventType.TOUCH_BEGIN) {
+            // This is the CSS active state
+            this.actor.add_style_pseudo_class ('active');
         }
         return Clutter.EVENT_PROPAGATE;
     },
@@ -158,10 +169,17 @@ const PopupBaseMenuItem = new Lang.Class({
         if (activeChanged) {
             this.active = active;
             if (active) {
-                this.actor.add_style_pseudo_class('active');
+                this.actor.add_style_class_name('selected');
                 this.actor.grab_key_focus();
             } else {
-                this.actor.remove_style_pseudo_class('active');
+                this.actor.remove_style_class_name('selected');
+                // Remove the CSS active state if the user press the button and
+                // while holding moves to another menu item, so we don't paint all items.
+                // The correct behaviour would be to set the new item with the CSS
+                // active state as well, but button-press-event is not trigered,
+                // so we should track it in our own, which would involve some work
+                // in the container
+                this.actor.remove_style_pseudo_class ('active');
             }
             this.emit('active-changed', active);
         }
@@ -245,8 +263,10 @@ const PopupSeparatorMenuItem = new Lang.Class({
                            Lang.bind(this, this._syncVisibility));
         this._syncVisibility();
 
-        this._separator = new Separator.HorizontalSeparator({ style_class: 'popup-separator-menu-item' });
-        this.actor.add(this._separator.actor, { expand: true });
+        this._separator = new St.Widget({ style_class: 'popup-separator-menu-item',
+                                          y_expand: true,
+                                          y_align: Clutter.ActorAlign.CENTER });
+        this.actor.add(this._separator, { expand: true });
     },
 
     _syncVisibility: function() {
@@ -1075,10 +1095,12 @@ const PopupSubMenuMenuItem = new Lang.Class({
             this.actor.add_style_pseudo_class('open');
             this._getTopMenu()._setOpenedSubMenu(this.menu);
             this.actor.add_accessible_state (Atk.StateType.EXPANDED);
+            this.actor.add_style_pseudo_class('checked');
         } else {
             this.actor.remove_style_pseudo_class('open');
             this._getTopMenu()._setOpenedSubMenu(null);
             this.actor.remove_accessible_state (Atk.StateType.EXPANDED);
+            this.actor.remove_style_pseudo_class('checked');
         }
     },
 
@@ -1123,6 +1145,9 @@ const PopupSubMenuMenuItem = new Lang.Class({
     },
 
     _onButtonReleaseEvent: function(actor) {
+        // Since we override the parent, we need to manage what the parent does
+        // with the active style class
+        this.actor.remove_style_pseudo_class ('active');
         this._setOpenState(!this._getOpenState());
         return Clutter.EVENT_PROPAGATE;
     }
@@ -1135,6 +1160,8 @@ const PopupMenuManager = new Lang.Class({
     Name: 'PopupMenuManager',
 
     _init: function(owner, grabParams) {
+        grabParams = Params.parse(grabParams,
+                                  { actionMode: Shell.ActionMode.POPUP });
         this._owner = owner;
         this._grabHelper = new GrabHelper.GrabHelper(owner.actor, grabParams);
         this._menus = [];

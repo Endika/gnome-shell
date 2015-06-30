@@ -3,6 +3,7 @@
 const Clutter = imports.gi.Clutter;
 const Gio = imports.gi.Gio;
 const GLib = imports.gi.GLib;
+const Gtk = imports.gi.Gtk;
 const Lang = imports.lang;
 const Mainloop = imports.mainloop;
 const Shell = imports.gi.Shell;
@@ -11,11 +12,13 @@ const St = imports.gi.St;
 const Tpl = imports.gi.TelepathyLogger;
 const Tp = imports.gi.TelepathyGLib;
 
+const Calendar = imports.ui.calendar;
 const History = imports.misc.history;
 const Main = imports.ui.main;
 const MessageTray = imports.ui.messageTray;
 const Params = imports.misc.params;
 const PopupMenu = imports.ui.popupMenu;
+const Util = imports.misc.util;
 
 // See Notification.appendMessage
 const SCROLLBACK_IMMEDIATE_TIME = 3 * 60; // 3 minutes
@@ -29,7 +32,7 @@ const SCROLLBACK_HISTORY_LINES = 10;
 // See Notification._onEntryChanged
 const COMPOSING_STOP_TIMEOUT = 5;
 
-const CLOCK_FORMAT_KEY = 'clock-format';
+const CHAT_EXPAND_LINES = 12;
 
 const NotificationDirection = {
     SENT: 'chat-sent',
@@ -104,15 +107,6 @@ const TelepathyClient = new Lang.Class({
         this._tpClient.set_handle_channels_func(
             Lang.bind(this, this._handleChannels));
 
-        // Watch subscription requests and connection errors
-        this._subscriptionSource = null;
-        this._accountSource = null;
-
-        // Workaround for gjs not supporting GPtrArray in signals.
-        // See BGO bug #653941 for context.
-        this._tpClient.set_contact_list_changed_func(
-            Lang.bind(this, this._contactListChanged));
-
         // Allow other clients (such as Empathy) to pre-empt our channels if
         // needed
         this._tpClient.set_delegated_channels_callback(
@@ -126,17 +120,12 @@ const TelepathyClient = new Lang.Class({
             throw new Error('Couldn\'t register Telepathy client. Error: \n' + e);
         }
 
-        this._accountManagerValidityChangedId = this._accountManager.connect('account-validity-changed',
-                                                                             Lang.bind(this, this._accountValidityChanged));
-
         if (!this._accountManager.is_prepared(Tp.AccountManager.get_feature_quark_core()))
-            this._accountManager.prepare_async(null, Lang.bind(this, this._accountManagerPrepared));
+            this._accountManager.prepare_async(null, null);
     },
 
     disable: function() {
         this._tpClient.unregister();
-        this._accountManager.disconnect(this._accountManagerValidityChangedId);
-        this._accountManagerValidityChangedId = 0;
     },
 
     _observeChannels: function(observer, account, conn, channels,
@@ -169,14 +158,6 @@ const TelepathyClient = new Lang.Class({
         this._chatSources[channel.get_object_path()] = source;
         source.connect('destroy', Lang.bind(this,
                        function() {
-                           if (this._tpClient.is_handling_channel(channel)) {
-                               // The chat box has been destroyed so it can't
-                               // handle the channel any more.
-                               channel.close_async(function(src, result) {
-                                   channel.close_finish(result);
-                               });
-                           }
-
                            delete this._chatSources[channel.get_object_path()];
                        }));
     },
@@ -221,33 +202,6 @@ const TelepathyClient = new Lang.Class({
         }
     },
 
-    _displayRoomInvitation: function(conn, channel, dispatchOp, context) {
-        // We can only approve the rooms if we have been invited to it
-        let selfContact = channel.group_get_self_contact();
-        if (selfContact == null) {
-            context.fail(new Tp.Error({ code: Tp.Error.INVALID_ARGUMENT,
-                                        message: 'Not invited to the room' }));
-            return;
-        }
-
-        let [invited, inviter, reason, msg] = channel.group_get_local_pending_contact_info(selfContact);
-        if (!invited) {
-            context.fail(new Tp.Error({ code: Tp.Error.INVALID_ARGUMENT,
-                                        message: 'Not invited to the room' }));
-            return;
-        }
-
-        // FIXME: We don't have a 'chat room' icon (bgo #653737) use
-        // system-users for now as Empathy does.
-        let source = new ApproverSource(dispatchOp, _("Invitation"),
-                                        Gio.icon_new_for_string('system-users'));
-        Main.messageTray.add(source);
-
-        let notif = new RoomInviteNotification(source, dispatchOp, channel, inviter);
-        source.notify(notif);
-        context.accept();
-    },
-
     _approveChannels: function(approver, account, conn, channels,
                                dispatchOp, context) {
         let channel = channels[0];
@@ -261,10 +215,6 @@ const TelepathyClient = new Lang.Class({
 
         if (chanType == Tp.IFACE_CHANNEL_TYPE_TEXT)
             this._approveTextChannel(account, conn, channel, dispatchOp, context);
-        else if (chanType == Tp.IFACE_CHANNEL_TYPE_CALL)
-            this._approveCall(account, conn, channel, dispatchOp, context);
-        else if (chanType == Tp.IFACE_CHANNEL_TYPE_FILE_TRANSFER)
-            this._approveFileTransfer(account, conn, channel, dispatchOp, context);
         else
             context.fail(new Tp.Error({ code: Tp.Error.INVALID_ARGUMENT,
                                         message: 'Unsupported channel type' }));
@@ -273,54 +223,22 @@ const TelepathyClient = new Lang.Class({
     _approveTextChannel: function(account, conn, channel, dispatchOp, context) {
         let [targetHandle, targetHandleType] = channel.get_handle();
 
-        if (targetHandleType == Tp.HandleType.CONTACT) {
-            // Approve private text channels right away as we are going to handle it
-            dispatchOp.claim_with_async(this._tpClient,
-                                        Lang.bind(this, function(dispatchOp, result) {
-                try {
-                    dispatchOp.claim_with_finish(result);
-                    this._handlingChannels(account, conn, [channel], false);
-                } catch (err) {
-                    throw new Error('Failed to Claim channel: ' + err);
-                }}));
-
-            context.accept();
-        } else {
-            this._displayRoomInvitation(conn, channel, dispatchOp, context);
+        if (targetHandleType != Tp.HandleType.CONTACT) {
+            context.fail(new Tp.Error({ code: Tp.Error.INVALID_ARGUMENT,
+                                        message: 'Unsupported handle type' }));
+            return;
         }
-    },
 
-    _approveCall: function(account, conn, channel, dispatchOp, context) {
-        let isVideo = false;
+        // Approve private text channels right away as we are going to handle it
+        dispatchOp.claim_with_async(this._tpClient, Lang.bind(this, function(dispatchOp, result) {
+            try {
+                dispatchOp.claim_with_finish(result);
+                this._handlingChannels(account, conn, [channel], false);
+            } catch (err) {
+                log('Failed to Claim channel: ' + err);
+            }
+        }));
 
-        let props = channel.borrow_immutable_properties();
-
-        if (props[Tp.PROP_CHANNEL_TYPE_CALL_INITIAL_VIDEO])
-          isVideo = true;
-
-        // We got the TpContact
-        let source = new ApproverSource(dispatchOp, _("Call"), isVideo ?
-                                        Gio.icon_new_for_string('camera-web') :
-                                        Gio.icon_new_for_string('audio-input-microphone'));
-        Main.messageTray.add(source);
-
-        let notif = new AudioVideoNotification(source, dispatchOp, channel,
-            channel.get_target_contact(), isVideo);
-        source.notify(notif);
-        context.accept();
-    },
-
-    _approveFileTransfer: function(account, conn, channel, dispatchOp, context) {
-        // Use the icon of the file being transferred
-        let gicon = Gio.content_type_get_icon(channel.get_mime_type());
-
-        // We got the TpContact
-        let source = new ApproverSource(dispatchOp, _("File Transfer"), gicon);
-        Main.messageTray.add(source);
-
-        let notif = new FileTransferNotification(source, dispatchOp, channel,
-            channel.get_target_contact());
-        source.notify(notif);
         context.accept();
     },
 
@@ -328,108 +246,6 @@ const TelepathyClient = new Lang.Class({
         // Nothing to do as we don't make a distinction between observed and
         // handled channels.
     },
-
-    _accountManagerPrepared: function(am, result) {
-        am.prepare_finish(result);
-
-        let accounts = am.get_valid_accounts();
-        for (let i = 0; i < accounts.length; i++) {
-            this._accountValidityChanged(am, accounts[i], true);
-        }
-    },
-
-    _accountValidityChanged: function(am, account, valid) {
-        if (!valid)
-            return;
-
-        // It would be better to connect to "status-changed" but we cannot.
-        // See discussion in https://bugzilla.gnome.org/show_bug.cgi?id=654159
-        account.connect("notify::connection-status",
-                        Lang.bind(this, this._accountConnectionStatusNotifyCb));
-
-        account.connect('notify::connection',
-                        Lang.bind(this, this._connectionChanged));
-        this._connectionChanged(account);
-    },
-
-    _connectionChanged: function(account) {
-        let conn = account.get_connection();
-        if (conn == null)
-            return;
-
-        this._tpClient.grab_contact_list_changed(conn);
-        if (conn.get_contact_list_state() == Tp.ContactListState.SUCCESS) {
-            this._contactListChanged(conn, conn.dup_contact_list(), []);
-        }
-    },
-
-    _contactListChanged: function(conn, added, removed) {
-        for (let i = 0; i < added.length; i++) {
-            let contact = added[i];
-
-            contact.connect('subscription-states-changed',
-                            Lang.bind(this, this._subscriptionStateChanged));
-            this._subscriptionStateChanged(contact);
-        }
-    },
-
-    _subscriptionStateChanged: function(contact) {
-        if (contact.get_publish_state() != Tp.SubscriptionState.ASK)
-            return;
-
-        /* Implicitly accept publish requests if contact is already subscribed */
-        if (contact.get_subscribe_state() == Tp.SubscriptionState.YES ||
-            contact.get_subscribe_state() == Tp.SubscriptionState.ASK) {
-
-            contact.authorize_publication_async(function(src, result) {
-                src.authorize_publication_finish(result)});
-
-            return;
-        }
-
-        /* Display notification to ask user to accept/reject request */
-        let source = this._ensureAppSource();
-
-        let notif = new SubscriptionRequestNotification(source, contact);
-        source.notify(notif);
-    },
-
-    _accountConnectionStatusNotifyCb: function(account) {
-        let connectionError = account.connection_error;
-
-        if (account.connection_status != Tp.ConnectionStatus.DISCONNECTED ||
-            connectionError == Tp.error_get_dbus_name(Tp.Error.CANCELLED)) {
-            return;
-        }
-
-        let notif = this._accountNotifications[account.get_object_path()];
-        if (notif)
-            return;
-
-        /* Display notification that account failed to connect */
-        let source = this._ensureAppSource();
-
-        notif = new AccountNotification(source, account, connectionError);
-        this._accountNotifications[account.get_object_path()] = notif;
-        notif.connect('destroy', Lang.bind(this, function() {
-            delete this._accountNotifications[account.get_object_path()];
-        }));
-        source.notify(notif);
-    },
-
-    _ensureAppSource: function() {
-        if (this._appSource == null) {
-            this._appSource = new MessageTray.Source(_("Chat"), 'empathy');
-            this._appSource.policy = new MessageTray.NotificationApplicationPolicy('empathy');
-
-            Main.messageTray.add(this._appSource);
-            this._appSource.connect('destroy', Lang.bind(this, function () {
-                this._appSource = null;
-            }));
-        }
-
-        return this._appSource;
-    }
 });
 
 const ChatSource = new Lang.Class({
@@ -450,14 +266,7 @@ const ChatSource = new Lang.Class({
         this._channel = channel;
         this._closedId = this._channel.connect('invalidated', Lang.bind(this, this._channelClosed));
 
-        this._notification = new ChatNotification(this);
-        this._notification.connect('clicked', Lang.bind(this, this.open));
-        this._notification.setUrgency(MessageTray.Urgency.HIGH);
         this._notifyTimeoutId = 0;
-
-        // We ack messages when the user expands the new notification or views the summary
-        // notification, in which case the notification is also expanded.
-        this._notification.connect('expanded', Lang.bind(this, this._ackMessages));
 
         this._presence = contact.get_presence_type();
 
@@ -471,29 +280,44 @@ const ChatSource = new Lang.Class({
 
         // Add ourselves as a source.
         Main.messageTray.add(this);
-        this.pushNotification(this._notification);
 
         this._getLogMessages();
     },
 
-    buildRightClickMenu: function() {
-        let item;
+    _ensureNotification: function() {
+        if (this._notification)
+            return;
 
-        let rightClickMenu = this.parent();
-        item = new PopupMenu.PopupMenuItem('');
-        item.actor.connect('notify::mapped', Lang.bind(this, function() {
-            item.label.set_text(this.isMuted ? _("Unmute") : _("Mute"));
-        }));
-        item.connect('activate', Lang.bind(this, function() {
-            this.setMuted(!this.isMuted);
-            this.emit('done-displaying-content', false);
-        }));
-        rightClickMenu.add(item.actor);
-        return rightClickMenu;
+        this._notification = new ChatNotification(this);
+        this._notification.connect('activated', Lang.bind(this, this.open));
+        this._notification.connect('updated', Lang.bind(this,
+            function() {
+                if (this._banner && this._banner.expanded)
+                    this._ackMessages();
+            }));
+        this._notification.connect('destroy', Lang.bind(this,
+            function() {
+                this._notification = null;
+            }));
+        this.pushNotification(this._notification);
     },
 
     _createPolicy: function() {
         return new MessageTray.NotificationApplicationPolicy('empathy');
+    },
+
+    createBanner: function() {
+        this._banner = new ChatNotificationBanner(this._notification);
+
+        // We ack messages when the user expands the new notification
+        let id = this._banner.connect('expanded', Lang.bind(this, this._ackMessages));
+        this._banner.actor.connect('destroy', Lang.bind(this,
+            function() {
+                this._banner.disconnect(id);
+                this._banner = null;
+            }));
+
+        return this._banner;
     },
 
     _updateAlias: function() {
@@ -504,7 +328,8 @@ const ChatSource = new Lang.Class({
             return;
 
         this.setTitle(newAlias);
-        this._notification.appendAliasChange(oldAlias, newAlias);
+        if (this._notification)
+            this._notification.appendAliasChange(oldAlias, newAlias);
     },
 
     getIcon: function() {
@@ -547,15 +372,28 @@ const ChatSource = new Lang.Class({
 
     _updateAvatarIcon: function() {
         this.iconUpdated();
-        this._notification.update(this._notification.title, null, { customContent: true });
+        if (this._notifiction)
+            this._notification.update(this._notification.title,
+                                      this._notification.bannerBodyText,
+                                      { gicon: this.getIcon() });
     },
 
     open: function() {
+        Main.overview.hide();
+        Main.panel.closeCalendar();
+
         if (this._client.is_handling_channel(this._channel)) {
-            // We are handling the channel, try to pass it to Empathy
-            this._client.delegate_channels_async([this._channel],
-                                                 global.get_current_time(),
-                                                 'org.freedesktop.Telepathy.Client.Empathy.Chat', null);
+            // We are handling the channel, try to pass it to Empathy or Polari
+            // (depending on the channel type)
+            // We don't check if either app is availble - mission control will
+            // fallback to something else if activation fails
+
+            let target;
+            if (this._channel.connection.protocol_name == 'irc')
+                target = 'org.freedesktop.Telepathy.Client.Polari';
+            else
+                target = 'org.freedesktop.Telepathy.Client.Empathy.Chat';
+            this._client.delegate_channels_async([this._channel], global.get_current_time(), target, null);
         } else {
             // We are not the handler, just ask to present the channel
             let dbus = Tp.DBusDaemon.dup();
@@ -578,6 +416,7 @@ const ChatSource = new Lang.Class({
         let [success, events] = logManager.get_filtered_events_finish(result);
 
         let logMessages = events.map(makeMessageFromTplEvent);
+        this._ensureNotification();
 
         let pendingTpMessages = this._channel.get_pending_messages();
         let pendingMessages = [];
@@ -627,6 +466,18 @@ const ChatSource = new Lang.Class({
     },
 
     destroy: function(reason) {
+        if (this._client.is_handling_channel(this._channel)) {
+            // The chat box has been destroyed so it can't
+            // handle the channel any more.
+            this._channel.close_async(function(channel, result) {
+                channel.close_finish(result);
+            });
+        }
+
+        // Keep source alive while the channel is open
+        if (reason != MessageTray.NotificationDestroyedReason.SOURCE_CLOSED)
+            return;
+
         if (this._destroyed)
             return;
 
@@ -640,9 +491,6 @@ const ChatSource = new Lang.Class({
         this._contact.disconnect(this._notifyAvatarId);
         this._contact.disconnect(this._presenceChangedId);
 
-        if (this._timestampTimeoutId)
-            Mainloop.source_remove(this._timestampTimeoutId);
-
         this.parent(reason);
     },
 
@@ -653,10 +501,6 @@ const ChatSource = new Lang.Class({
     /* All messages are new messages for Telepathy sources */
     get count() {
         return this._pendingMessages.length;
-    },
-
-    get indicatorCount() {
-        return this.count;
     },
 
     get unseenCount() {
@@ -671,6 +515,7 @@ const ChatSource = new Lang.Class({
         if (message.get_message_type() == Tp.ChannelTextMessageType.DELIVERY_REPORT)
             return;
 
+        this._ensureNotification();
         this._pendingMessages.push(message);
         this.countUpdated();
 
@@ -698,6 +543,7 @@ const ChatSource = new Lang.Class({
     // This is called for both messages we send from
     // our client and other clients as well.
     _messageSent: function(channel, message, flags, token) {
+        this._ensureNotification();
         message = makeMessageFromTpMessage(message, NotificationDirection.SENT);
         this._notification.appendMessage(message);
     },
@@ -735,14 +581,10 @@ const ChatSource = new Lang.Class({
     },
 
     _presenceChanged: function (contact, presence, status, message) {
-        let msg, title;
-
-        title = GLib.markup_escape_text(this.title, -1);
-
-        this._notification.update(this._notification.title, null, { customContent: true, secondaryGIcon: this.getSecondaryIcon() });
-
-        if (message)
-            msg += ' <i>(' + GLib.markup_escape_text(message, -1) + ')</i>';
+        if (this._notification)
+            this._notification.update(this._notification.title,
+                                      this._notification.bannerBodyText,
+                                      { secondaryGIcon: this.getSecondaryIcon() });
     },
 
     _pendingRemoved: function(channel, message) {
@@ -752,6 +594,10 @@ const ChatSource = new Lang.Class({
             this._pendingMessages.splice(idx, 1);
             this.countUpdated();
         }
+
+        if (this._pendingMessages.length == 0 &&
+            this._banner && !this._banner.expanded)
+            this._banner.hide();
     },
 
     _ackMessages: function() {
@@ -766,42 +612,20 @@ const ChatNotification = new Lang.Class({
     Extends: MessageTray.Notification,
 
     _init: function(source) {
-        this.parent(source, source.title, null, { customContent: true, secondaryGIcon: source.getSecondaryIcon() });
+        this.parent(source, source.title, null,
+                    { secondaryGIcon: source.getSecondaryIcon() });
+        this.setUrgency(MessageTray.Urgency.HIGH);
         this.setResident(true);
 
-        this._responseEntry = new St.Entry({ style_class: 'chat-response',
-                                             can_focus: true });
-        this._responseEntry.clutter_text.connect('activate', Lang.bind(this, this._onEntryActivated));
-        this._responseEntry.clutter_text.connect('text-changed', Lang.bind(this, this._onEntryChanged));
-        this.setActionArea(this._responseEntry);
-
-        this._responseEntry.clutter_text.connect('key-focus-in', Lang.bind(this, function() {
-            this.focused = true;
-        }));
-        this._responseEntry.clutter_text.connect('key-focus-out', Lang.bind(this, function() {
-            this.focused = false;
-            this.emit('unfocused');
-        }));
-
-        this._createScrollArea();
-        this._lastGroup = null;
-
-        // Keep track of the bottom position for the current adjustment and
-        // force a scroll to the bottom if things change while we were at the
-        // bottom
-        this._oldMaxScrollValue = this._scrollArea.vscroll.adjustment.value;
-        this._scrollArea.add_style_class_name('chat-notification-scrollview');
-        this._scrollArea.vscroll.adjustment.connect('changed', Lang.bind(this, function(adjustment) {
-            if (adjustment.value == this._oldMaxScrollValue)
-                this.scrollTo(St.Side.BOTTOM);
-            this._oldMaxScrollValue = Math.max(adjustment.lower, adjustment.upper - adjustment.page_size);
-        }));
-
-        this._inputHistory = new History.HistoryManager({ entry: this._responseEntry.clutter_text });
-
-        this._history = [];
+        this.messages = [];
         this._timestampTimeoutId = 0;
-        this._composingTimeoutId = 0;
+    },
+
+    destroy: function(reason) {
+        if (this._timestampTimeoutId)
+            Mainloop.source_remove(this._timestampTimeoutId);
+        this._timestampTimeoutId = 0;
+        this.parent(reason);
     },
 
     /**
@@ -827,10 +651,8 @@ const ChatNotification = new Lang.Class({
             styles.push('chat-action');
         }
 
-        if (message.direction == NotificationDirection.RECEIVED) {
-            this.update(this.source.title, messageBody, { customContent: true,
-                                                          bannerMarkup: true });
-        }
+        if (message.direction == NotificationDirection.RECEIVED)
+            this.update(this.source.title, messageBody, { bannerMarkup: true });
 
         let group = (message.direction == NotificationDirection.RECEIVED ?
                      'received' : 'sent');
@@ -843,10 +665,10 @@ const ChatNotification = new Lang.Class({
     },
 
     _filterMessages: function() {
-        if (this._history.length < 1)
+        if (this.messages.length < 1)
             return;
 
-        let lastMessageTime = this._history[0].time;
+        let lastMessageTime = this.messages[0].timestamp;
         let currentTime = (Date.now() / 1000);
 
         // Keep the scrollback from growing too long. If the most
@@ -858,12 +680,12 @@ const ChatNotification = new Lang.Class({
         let maxLength = (lastMessageTime < currentTime - SCROLLBACK_RECENT_TIME) ?
             SCROLLBACK_IDLE_LENGTH : SCROLLBACK_RECENT_LENGTH;
 
-        let filteredHistory = this._history.filter(function(item) { return item.realMessage });
+        let filteredHistory = this.messages.filter(function(item) { return item.realMessage });
         if (filteredHistory.length > maxLength) {
             let lastMessageToKeep = filteredHistory[maxLength];
-            let expired = this._history.splice(this._history.indexOf(lastMessageToKeep));
+            let expired = this.messages.splice(this.messages.indexOf(lastMessageToKeep));
             for (let i = 0; i < expired.length; i++)
-                expired[i].actor.destroy();
+                this.emit('message-removed', expired[i]);
         }
     },
 
@@ -876,7 +698,6 @@ const ChatNotification = new Lang.Class({
      *  styles: Style class names for the message to have.
      *  timestamp: The timestamp of the message.
      *  noTimestamp: suppress timestamp signal?
-     *  childProps: props to add the actor with.
      */
     _append: function(props) {
         let currentTime = (Date.now() / 1000);
@@ -884,44 +705,23 @@ const ChatNotification = new Lang.Class({
                                       group: null,
                                       styles: [],
                                       timestamp: currentTime,
-                                      noTimestamp: false,
-                                      childProps: null });
+                                      noTimestamp: false });
 
         // Reset the old message timeout
         if (this._timestampTimeoutId)
             Mainloop.source_remove(this._timestampTimeoutId);
+        this._timestampTimeoutId = 0;
 
-        let highlighter = new MessageTray.URLHighlighter(props.body,
-                                                         true,  // line wrap?
-                                                         true); // allow markup?
+        let message = { realMessage: props.group != 'meta',
+                        showTimestamp: false };
+        Lang.copyProperties(props, message);
+        delete message.noTimestamp;
 
-        let body = highlighter.actor;
-
-        let styles = props.styles;
-        for (let i = 0; i < styles.length; i++)
-            body.add_style_class_name(styles[i]);
-
-        let group = props.group;
-        if (group != this._lastGroup) {
-            this._lastGroup = group;
-            let emptyLine = new St.Label({ style_class: 'chat-empty-line' });
-            this.addActor(emptyLine);
-            this._history.unshift({ actor: emptyLine, time: timestamp,
-                                    realMessage: false });
-        }
-
-        let lineBox = new St.BoxLayout({ vertical: false });
-        lineBox.add(body, props.childProps);
-        this.addActor(lineBox);
-        this._lastMessageBox = lineBox;
-
-        this.updated();
-
-        let timestamp = props.timestamp;
-        this._history.unshift({ actor: lineBox, time: timestamp,
-                                realMessage: group != 'meta' });
+        this.messages.unshift(message);
+        this.emit('message-added', message);
 
         if (!props.noTimestamp) {
+            let timestamp = props.timestamp;
             if (timestamp < currentTime - SCROLLBACK_IMMEDIATE_TIME) {
                 this.appendTimestamp();
             } else {
@@ -937,101 +737,11 @@ const ChatNotification = new Lang.Class({
         this._filterMessages();
     },
 
-    _formatTimestamp: function(date) {
-        let now = new Date();
-
-        var daysAgo = (now.getTime() - date.getTime()) / (24 * 60 * 60 * 1000);
-
-        let format;
-
-        let desktopSettings = new Gio.Settings({ schema_id: 'org.gnome.desktop.interface' });
-        let clockFormat = desktopSettings.get_string(CLOCK_FORMAT_KEY);
-        let hasAmPm = date.toLocaleFormat('%p') != '';
-
-        if (clockFormat == '24h' || !hasAmPm) {
-            // Show only the time if date is on today
-            if(daysAgo < 1){
-                /* Translators: Time in 24h format */
-                format = N_("%H\u2236%M");
-            }
-            // Show the word "Yesterday" and time if date is on yesterday
-            else if(daysAgo <2){
-                /* Translators: this is the word "Yesterday" followed by a
-                 time string in 24h format. i.e. "Yesterday, 14:30" */
-                // xgettext:no-c-format
-                format = N_("Yesterday, %H\u2236%M");
-            }
-            // Show a week day and time if date is in the last week
-            else if (daysAgo < 7) {
-                /* Translators: this is the week day name followed by a time
-                 string in 24h format. i.e. "Monday, 14:30" */
-                // xgettext:no-c-format
-                format = N_("%A, %H\u2236%M");
-
-            } else if (date.getYear() == now.getYear()) {
-                /* Translators: this is the month name and day number
-                 followed by a time string in 24h format.
-                 i.e. "May 25, 14:30" */
-                // xgettext:no-c-format
-                format = N_("%B %d, %H\u2236%M");
-            } else {
-                /* Translators: this is the month name, day number, year
-                 number followed by a time string in 24h format.
-                 i.e. "May 25 2012, 14:30" */
-                // xgettext:no-c-format
-                format = N_("%B %d %Y, %H\u2236%M");
-            }
-        } else {
-            // Show only the time if date is on today
-            if(daysAgo < 1){
-                /* Translators: Time in 24h format */
-                format = N_("%l\u2236%M %p");
-            }
-            // Show the word "Yesterday" and time if date is on yesterday
-            else if(daysAgo <2){
-                /* Translators: this is the word "Yesterday" followed by a
-                 time string in 12h format. i.e. "Yesterday, 2:30 pm" */
-                // xgettext:no-c-format
-                format = N_("Yesterday, %l\u2236%M %p");
-            }
-            // Show a week day and time if date is in the last week
-            else if (daysAgo < 7) {
-                /* Translators: this is the week day name followed by a time
-                 string in 12h format. i.e. "Monday, 2:30 pm" */
-                // xgettext:no-c-format
-                format = N_("%A, %l\u2236%M %p");
-
-            } else if (date.getYear() == now.getYear()) {
-                /* Translators: this is the month name and day number
-                 followed by a time string in 12h format.
-                 i.e. "May 25, 2:30 pm" */
-                // xgettext:no-c-format
-                format = N_("%B %d, %l\u2236%M %p");
-            } else {
-                /* Translators: this is the month name, day number, year
-                 number followed by a time string in 12h format.
-                 i.e. "May 25 2012, 2:30 pm"*/
-                // xgettext:no-c-format
-                format = N_("%B %d %Y, %l\u2236%M %p");
-            }
-        }
-        return date.toLocaleFormat(Shell.util_translate_time_string(format));
-    },
-
     appendTimestamp: function() {
         this._timestampTimeoutId = 0;
 
-        let lastMessageTime = this._history[0].time;
-        let lastMessageDate = new Date(lastMessageTime * 1000);
-
-        let timeLabel = new St.Label({ text: this._formatTimestamp(lastMessageDate),
-                                       style_class: 'chat-meta-message',
-                                       x_expand: true,
-                                       y_expand: true,
-                                       x_align: Clutter.ActorAlign.END,
-                                       y_align: Clutter.ActorAlign.END });
-
-        this._lastMessageBox.add_actor(timeLabel);
+        this.messages[0].showTimestamp = true;
+        this.emit('timestamp-changed', this.messages[0]);
 
         this._filterMessages();
 
@@ -1046,13 +756,154 @@ const ChatNotification = new Lang.Class({
            IM name. */
         let message = '<i>' + _("%s is now known as %s").format(oldAlias, newAlias) + '</i>';
 
-        let label = this._append({ body: message,
-                                   group: 'meta',
-                                   styles: ['chat-meta-message'] });
-
-        this.update(newAlias, null, { customContent: true });
+        this._append({ body: message,
+                       group: 'meta',
+                       styles: ['chat-meta-message'] });
 
         this._filterMessages();
+    }
+});
+
+const ChatLineBox = new Lang.Class({
+    Name: 'ChatLineBox',
+    Extends: St.BoxLayout,
+
+    vfunc_get_preferred_height: function(forWidth) {
+        let [, natHeight] = this.parent(forWidth);
+        return [natHeight, natHeight];
+    }
+});
+
+const ChatNotificationBanner = new Lang.Class({
+    Name: 'ChatNotificationBanner',
+    Extends: MessageTray.NotificationBanner,
+
+    _init: function(notification) {
+        this.parent(notification);
+
+        this._responseEntry = new St.Entry({ style_class: 'chat-response',
+                                             x_expand: true,
+                                             can_focus: true });
+        this._responseEntry.clutter_text.connect('activate', Lang.bind(this, this._onEntryActivated));
+        this._responseEntry.clutter_text.connect('text-changed', Lang.bind(this, this._onEntryChanged));
+        this.setActionArea(this._responseEntry);
+
+        this._responseEntry.clutter_text.connect('key-focus-in', Lang.bind(this, function() {
+            this.focused = true;
+        }));
+        this._responseEntry.clutter_text.connect('key-focus-out', Lang.bind(this, function() {
+            this.focused = false;
+            this.emit('unfocused');
+        }));
+
+        this._scrollArea = new St.ScrollView({ style_class: 'chat-scrollview vfade',
+                                               vscrollbar_policy: Gtk.PolicyType.AUTOMATIC,
+                                               hscrollbar_policy: Gtk.PolicyType.NEVER,
+                                               visible: this.expanded });
+        this._contentArea = new St.BoxLayout({ style_class: 'chat-body',
+                                               vertical: true });
+        this._scrollArea.add_actor(this._contentArea);
+
+        this.setExpandedBody(this._scrollArea);
+        this.setExpandedLines(CHAT_EXPAND_LINES);
+
+        this._lastGroup = null;
+
+        // Keep track of the bottom position for the current adjustment and
+        // force a scroll to the bottom if things change while we were at the
+        // bottom
+        this._oldMaxScrollValue = this._scrollArea.vscroll.adjustment.value;
+        this._scrollArea.vscroll.adjustment.connect('changed', Lang.bind(this, function(adjustment) {
+            if (adjustment.value == this._oldMaxScrollValue)
+                this.scrollTo(St.Side.BOTTOM);
+            this._oldMaxScrollValue = Math.max(adjustment.lower, adjustment.upper - adjustment.page_size);
+        }));
+
+        this._inputHistory = new History.HistoryManager({ entry: this._responseEntry.clutter_text });
+
+        this._composingTimeoutId = 0;
+
+        this._messageActors = new Map();
+
+        this._messageAddedId = this.notification.connect('message-added',
+            Lang.bind(this, function(n, message) {
+                this._addMessage(message);
+            }));
+        this._messageRemovedId = this.notification.connect('message-removed',
+            Lang.bind(this, function(n, message) {
+                let actor = this._messageActors.get(message);
+                if (this._messageActors.delete(message))
+                    actor.destroy();
+            }));
+        this._timestampChangedId = this.notification.connect('timestamp-changed',
+            Lang.bind(this, function(n, message) {
+                this._updateTimestamp(message);
+            }));
+
+        for (let i = this.notification.messages.length - 1; i >= 0; i--)
+            this._addMessage(this.notification.messages[i]);
+    },
+
+    _onDestroy: function() {
+        this.parent();
+        this.notification.disconnect(this._messageAddedId);
+        this.notification.disconnect(this._messageRemovedId);
+        this.notification.disconnect(this._timestampChangedId);
+    },
+
+    scrollTo: function(side) {
+        let adjustment = this._scrollArea.vscroll.adjustment;
+        if (side == St.Side.TOP)
+            adjustment.value = adjustment.lower;
+        else if (side == St.Side.BOTTOM)
+            adjustment.value = adjustment.upper;
+    },
+
+    hide: function() {
+        this.emit('done-displaying');
+    },
+
+    _addMessage: function(message) {
+        let highlighter = new Calendar.URLHighlighter(message.body, true, true);
+        let body = highlighter.actor;
+
+        let styles = message.styles;
+        for (let i = 0; i < styles.length; i++)
+            body.add_style_class_name(styles[i]);
+
+        let group = message.group;
+        if (group != this._lastGroup) {
+            this._lastGroup = group;
+            body.add_style_class_name('chat-new-group');
+        }
+
+        let lineBox = new ChatLineBox();
+        lineBox.add(body);
+        this._contentArea.add_actor(lineBox);
+        this._messageActors.set(message, lineBox);
+
+        this._updateTimestamp(message);
+    },
+
+    _updateTimestamp: function(message) {
+        let actor = this._messageActors.get(message);
+        if (!actor)
+            return;
+
+        while (actor.get_n_children() > 1)
+            actor.get_child_at_index(1).destroy();
+
+        if (message.showTimestamp) {
+            let lastMessageTime = message.timestamp;
+            let lastMessageDate = new Date(lastMessageTime * 1000);
+
+            let timeLabel = Util.createTimeLabel(lastMessageDate);
+            timeLabel.style_class = 'chat-meta-message';
+            timeLabel.x_expand = timeLabel.y_expand = true;
+            timeLabel.x_align = timeLabel.y_align = Clutter.ActorAlign.END;
+
+            actor.add_actor(timeLabel);
+        }
     },
 
     _onEntryActivated: function() {
@@ -1065,13 +916,13 @@ const ChatNotification = new Lang.Class({
         // Telepathy sends out the Sent signal for us.
         // see Source._messageSent
         this._responseEntry.set_text('');
-        this.source.respond(text);
+        this.notification.source.respond(text);
     },
 
     _composingStopTimeout: function() {
         this._composingTimeoutId = 0;
 
-        this.source.setChatState(Tp.ChannelChatState.PAUSED);
+        this.notification.source.setChatState(Tp.ChannelChatState.PAUSED);
 
         return GLib.SOURCE_REMOVE;
     },
@@ -1091,370 +942,16 @@ const ChatNotification = new Lang.Class({
         }
 
         if (text != '') {
-            this.source.setChatState(Tp.ChannelChatState.COMPOSING);
+            this.notification.source.setChatState(Tp.ChannelChatState.COMPOSING);
 
             this._composingTimeoutId = Mainloop.timeout_add_seconds(
                 COMPOSING_STOP_TIMEOUT,
                 Lang.bind(this, this._composingStopTimeout));
             GLib.Source.set_name_by_id(this._composingTimeoutId, '[gnome-shell] this._composingStopTimeout');
         } else {
-            this.source.setChatState(Tp.ChannelChatState.ACTIVE);
+            this.notification.source.setChatState(Tp.ChannelChatState.ACTIVE);
         }
     }
 });
 
-const ApproverSource = new Lang.Class({
-    Name: 'ApproverSource',
-    Extends: MessageTray.Source,
-
-    _init: function(dispatchOp, text, gicon) {
-        this._gicon = gicon;
-
-        this.parent(text);
-
-        this._dispatchOp = dispatchOp;
-
-        // Destroy the source if the channel dispatch operation is invalidated
-        // as we can't approve any more.
-        this._invalidId = dispatchOp.connect('invalidated',
-                                             Lang.bind(this, function(domain, code, msg) {
-            this.destroy();
-        }));
-    },
-
-    _createPolicy: function() {
-        return new MessageTray.NotificationApplicationPolicy('empathy');
-    },
-
-    destroy: function() {
-        if (this._invalidId != 0) {
-            this._dispatchOp.disconnect(this._invalidId);
-            this._invalidId = 0;
-        }
-
-        this.parent();
-    },
-
-    getIcon: function() {
-        return this._gicon;
-    }
-});
-
-const RoomInviteNotification = new Lang.Class({
-    Name: 'RoomInviteNotification',
-    Extends: MessageTray.Notification,
-
-    _init: function(source, dispatchOp, channel, inviter) {
-        this.parent(source,
-                    /* translators: argument is a room name like
-                     * room@jabber.org for example. */
-                    _("Invitation to %s").format(channel.get_identifier()),
-                    null,
-                    { customContent: true });
-        this.setResident(true);
-
-        /* translators: first argument is the name of a contact and the second
-         * one the name of a room. "Alice is inviting you to join room@jabber.org
-         * for example. */
-        this.addBody(_("%s is inviting you to join %s").format(inviter.get_alias(), channel.get_identifier()));
-
-        this.addAction(_("Decline"), Lang.bind(this, function() {
-            dispatchOp.leave_channels_async(Tp.ChannelGroupChangeReason.NONE, '', function(src, result) {
-                src.leave_channels_finish(result);
-            });
-            this.destroy();
-        }));
-        this.addAction(_("Accept"), Lang.bind(this, function() {
-            dispatchOp.handle_with_time_async('', global.get_current_time(), function(src, result) {
-                src.handle_with_time_finish(result);
-            });
-            this.destroy();
-        }));
-    }
-});
-
-// Audio Video
-const AudioVideoNotification = new Lang.Class({
-    Name: 'AudioVideoNotification',
-    Extends: MessageTray.Notification,
-
-    _init: function(source, dispatchOp, channel, contact, isVideo) {
-        let title = '';
-
-        if (isVideo)
-             /* translators: argument is a contact name like Alice for example. */
-            title = _("Video call from %s").format(contact.get_alias());
-        else
-             /* translators: argument is a contact name like Alice for example. */
-            title = _("Call from %s").format(contact.get_alias());
-
-        this.parent(source, title, null, { customContent: true });
-        this.setResident(true);
-
-        this.setUrgency(MessageTray.Urgency.CRITICAL);
-
-        this.addAction(_("Decline"), Lang.bind(this, function() {
-            dispatchOp.leave_channels_async(Tp.ChannelGroupChangeReason.NONE, '', function(src, result) {
-                src.leave_channels_finish(result);
-            });
-            this.destroy();
-        }));
-        /* translators: this is a button label (verb), not a noun */
-        this.addAction(_("Answer"), Lang.bind(this, function() {
-            dispatchOp.handle_with_time_async('', global.get_current_time(), function(src, result) {
-                src.handle_with_time_finish(result);
-            });
-            this.destroy();
-        }));
-    }
-});
-
-// File Transfer
-const FileTransferNotification = new Lang.Class({
-    Name: 'FileTransferNotification',
-    Extends: MessageTray.Notification,
-
-    _init: function(source, dispatchOp, channel, contact) {
-        this.parent(source,
-                    /* To translators: The first parameter is
-                     * the contact's alias and the second one is the
-                     * file name. The string will be something
-                     * like: "Alice is sending you test.ogg"
-                     */
-                    _("%s is sending you %s").format(contact.get_alias(),
-                                                     channel.get_filename()),
-                    null,
-                    { customContent: true });
-        this.setResident(true);
-
-        this.addAction(_("Decline"), Lang.bind(this, function() {
-            dispatchOp.leave_channels_async(Tp.ChannelGroupChangeReason.NONE, '', function(src, result) {
-                src.leave_channels_finish(result);
-            });
-            this.destroy();
-        }));
-        this.addAction(_("Accept"), Lang.bind(this, function() {
-            dispatchOp.handle_with_time_async('', global.get_current_time(), function(src, result) {
-                src.handle_with_time_finish(result);
-            });
-            this.destroy();
-        }));
-    }
-});
-
-// Subscription request
-const SubscriptionRequestNotification = new Lang.Class({
-    Name: 'SubscriptionRequestNotification',
-    Extends: MessageTray.Notification,
-
-    _init: function(source, contact) {
-        this.parent(source,
-                    /* To translators: The parameter is the contact's alias */
-                    _("%s would like permission to see when you are online").format(contact.get_alias()),
-                    null, { customContent: true });
-
-        this._contact = contact;
-        this._connection = contact.get_connection();
-
-        let layout = new St.BoxLayout({ vertical: false });
-
-        // Display avatar
-        let iconBox = new St.Bin({ style_class: 'avatar-box' });
-        iconBox._size = 48;
-
-        let textureCache = St.TextureCache.get_default();
-        let file = contact.get_avatar_file();
-
-        if (file) {
-            let scaleFactor = St.ThemeContext.get_for_stage(global.stage).scale_factor;
-            iconBox.child = textureCache.load_file_async(file, iconBox._size, iconBox._size, scaleFactor);
-        }
-        else {
-            iconBox.child = new St.Icon({ icon_name: 'avatar-default',
-                                          icon_size: iconBox._size });
-        }
-
-        layout.add(iconBox);
-
-        // subscription request message
-        let label = new St.Label({ style_class: 'subscription-message',
-                                   text: contact.get_publish_request() });
-
-        layout.add(label);
-
-        this.addActor(layout);
-
-        this.addAction(_("Decline"), Lang.bind(this, function() {
-            contact.remove_async(function(src, result) {
-                src.remove_finish(result);
-            });
-        }));
-        this.addAction(_("Accept"), Lang.bind(this, function() {
-            // Authorize the contact and request to see his status as well
-            contact.authorize_publication_async(function(src, result) {
-                src.authorize_publication_finish(result);
-            });
-
-            contact.request_subscription_async('', function(src, result) {
-                src.request_subscription_finish(result);
-            });
-        }));
-
-        this._changedId = contact.connect('subscription-states-changed',
-            Lang.bind(this, this._subscriptionStatesChangedCb));
-        this._invalidatedId = this._connection.connect('invalidated',
-            Lang.bind(this, this.destroy));
-    },
-
-    destroy: function() {
-        if (this._changedId != 0) {
-            this._contact.disconnect(this._changedId);
-            this._changedId = 0;
-        }
-
-        if (this._invalidatedId != 0) {
-            this._connection.disconnect(this._invalidatedId);
-            this._invalidatedId = 0;
-        }
-
-        this.parent();
-    },
-
-    _subscriptionStatesChangedCb: function(contact, subscribe, publish, msg) {
-        // Destroy the notification if the subscription request has been
-        // answered
-        if (publish != Tp.SubscriptionState.ASK)
-            this.destroy();
-    }
-});
-
-// Messages from empathy/libempathy/empathy-utils.c
-// create_errors_to_message_hash()
-
-/* Translator note: these should be the same messages that are
- * used in Empathy, so just copy and paste from there. */
-let _connectionErrorMessages = {};
-_connectionErrorMessages[Tp.error_get_dbus_name(Tp.Error.NETWORK_ERROR)]
-  = _("Network error");
-_connectionErrorMessages[Tp.error_get_dbus_name(Tp.Error.AUTHENTICATION_FAILED)]
-  = _("Authentication failed");
-_connectionErrorMessages[Tp.error_get_dbus_name(Tp.Error.ENCRYPTION_ERROR)]
-  = _("Encryption error");
-_connectionErrorMessages[Tp.error_get_dbus_name(Tp.Error.CERT_NOT_PROVIDED)]
-  = _("Certificate not provided");
-_connectionErrorMessages[Tp.error_get_dbus_name(Tp.Error.CERT_UNTRUSTED)]
-  = _("Certificate untrusted");
-_connectionErrorMessages[Tp.error_get_dbus_name(Tp.Error.CERT_EXPIRED)]
-  = _("Certificate expired");
-_connectionErrorMessages[Tp.error_get_dbus_name(Tp.Error.CERT_NOT_ACTIVATED)]
-  = _("Certificate not activated");
-_connectionErrorMessages[Tp.error_get_dbus_name(Tp.Error.CERT_HOSTNAME_MISMATCH)]
-  = _("Certificate hostname mismatch");
-_connectionErrorMessages[Tp.error_get_dbus_name(Tp.Error.CERT_FINGERPRINT_MISMATCH)]
-  = _("Certificate fingerprint mismatch");
-_connectionErrorMessages[Tp.error_get_dbus_name(Tp.Error.CERT_SELF_SIGNED)]
-  = _("Certificate self-signed");
-_connectionErrorMessages[Tp.error_get_dbus_name(Tp.Error.CANCELLED)]
-  = _("Status is set to offline");
-_connectionErrorMessages[Tp.error_get_dbus_name(Tp.Error.ENCRYPTION_NOT_AVAILABLE)]
-  = _("Encryption is not available");
-_connectionErrorMessages[Tp.error_get_dbus_name(Tp.Error.CERT_INVALID)]
-  = _("Certificate is invalid");
-_connectionErrorMessages[Tp.error_get_dbus_name(Tp.Error.CONNECTION_REFUSED)]
-  = _("Connection has been refused");
-_connectionErrorMessages[Tp.error_get_dbus_name(Tp.Error.CONNECTION_FAILED)]
-  = _("Connection can't be established");
-_connectionErrorMessages[Tp.error_get_dbus_name(Tp.Error.CONNECTION_LOST)]
-  = _("Connection has been lost");
-_connectionErrorMessages[Tp.error_get_dbus_name(Tp.Error.ALREADY_CONNECTED)]
-  = _("This account is already connected to the server");
-_connectionErrorMessages[Tp.error_get_dbus_name(Tp.Error.CONNECTION_REPLACED)]
-  = _("Connection has been replaced by a new connection using the same resource");
-_connectionErrorMessages[Tp.error_get_dbus_name(Tp.Error.REGISTRATION_EXISTS)]
-  = _("The account already exists on the server");
-_connectionErrorMessages[Tp.error_get_dbus_name(Tp.Error.SERVICE_BUSY)]
-  = _("Server is currently too busy to handle the connection");
-_connectionErrorMessages[Tp.error_get_dbus_name(Tp.Error.CERT_REVOKED)]
-  = _("Certificate has been revoked");
-_connectionErrorMessages[Tp.error_get_dbus_name(Tp.Error.CERT_INSECURE)]
-  = _("Certificate uses an insecure cipher algorithm or is cryptographically weak");
-_connectionErrorMessages[Tp.error_get_dbus_name(Tp.Error.CERT_LIMIT_EXCEEDED)]
-  = _("The length of the server certificate, or the depth of the server certificate chain, exceed the limits imposed by the cryptography library");
-_connectionErrorMessages['org.freedesktop.DBus.Error.NoReply']
-  = _("Internal error");
-
-const AccountNotification = new Lang.Class({
-    Name: 'AccountNotification',
-    Extends: MessageTray.Notification,
-
-    _init: function(source, account, connectionError) {
-        this.parent(source,
-                    /* translators: argument is the account name, like
-                     * name@jabber.org for example. */
-                    _("Unable to connect to %s").format(account.get_display_name()),
-                    this._getMessage(connectionError));
-
-        this._account = account;
-
-        this.addAction(_("View account"), Lang.bind(this, function() {
-            let cmd = 'empathy-accounts --select-account=' +
-                account.get_path_suffix();
-            let app_info = Gio.app_info_create_from_commandline(cmd, null, 0);
-            app_info.launch([], global.create_app_launch_context(0, -1));
-        }));
-
-        this._enabledId = account.connect('notify::enabled',
-                                          Lang.bind(this, function() {
-                                              if (!account.is_enabled())
-                                                  this.destroy();
-                                          }));
-
-        this._invalidatedId = account.connect('invalidated',
-                                              Lang.bind(this, this.destroy));
-
-        this._connectionStatusId = account.connect('notify::connection-status',
-            Lang.bind(this, function() {
-                let status = account.connection_status;
-                if (status == Tp.ConnectionStatus.CONNECTED) {
-                    this.destroy();
-                } else if (status == Tp.ConnectionStatus.DISCONNECTED) {
-                    let connectionError = account.connection_error;
-
-                    if (connectionError == Tp.error_get_dbus_name(Tp.Error.CANCELLED))
-                        this.destroy();
-                    else
-                        this.update(this.title, this._getMessage(connectionError));
-                }
-            }));
-    },
-
-    _getMessage: function(connectionError) {
-        let message;
-        if (connectionError in _connectionErrorMessages) {
-            message = _connectionErrorMessages[connectionError];
-        } else {
-            message = _("Unknown reason");
-        }
-        return message;
-    },
-
-    destroy: function() {
-        if (this._enabledId != 0) {
-            this._account.disconnect(this._enabledId);
-            this._enabledId = 0;
-        }
-
-        if (this._invalidatedId != 0) {
-            this._account.disconnect(this._invalidatedId);
-            this._invalidatedId = 0;
-        }
-
-        if (this._connectionStatusId != 0) {
-            this._account.disconnect(this._connectionStatusId);
-            this._connectionStatusId = 0;
-        }
-
-        this.parent();
-    }
-});
 const Component = TelepathyClient;

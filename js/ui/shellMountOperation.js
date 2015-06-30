@@ -49,9 +49,9 @@ function _setButtonsForChoices(dialog, choices) {
 function _setLabelsForMessage(dialog, message) {
     let labels = message.split('\n');
 
-    _setLabelText(dialog.subjectLabel, labels[0]);
-    if (labels.length > 1)
-        _setLabelText(dialog.descriptionLabel, labels[1]);
+    _setLabelText(dialog.subjectLabel, labels.shift());
+    if (labels.length > 0)
+        _setLabelText(dialog.descriptionLabel, labels.join('\n'));
 }
 
 function _createIcon(gicon) {
@@ -347,7 +347,7 @@ const ShellMountPasswordDialog = new Lang.Class({
         mainContentBox.add(this._messageBox,
                            { y_align: St.Align.START, expand: true, x_fill: true, y_fill: true });
 
-        let subject = new St.Label({ style_class: 'prompt-dialog-headline' });
+        let subject = new St.Label({ style_class: 'prompt-dialog-headline headline' });
         this._messageBox.add(subject,
                              { y_fill:  false,
                                y_align: St.Align.START });

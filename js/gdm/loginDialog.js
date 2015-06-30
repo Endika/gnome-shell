@@ -22,6 +22,7 @@ const Clutter = imports.gi.Clutter;
 const Gdm = imports.gi.Gdm;
 const Gio = imports.gi.Gio;
 const GLib = imports.gi.GLib;
+const GObject = imports.gi.GObject;
 const Gtk = imports.gi.Gtk;
 const Lang = imports.lang;
 const Mainloop = imports.mainloop;
@@ -48,6 +49,7 @@ const _FADE_ANIMATION_TIME = 0.25;
 const _SCROLL_ANIMATION_TIME = 0.5;
 const _TIMED_LOGIN_IDLE_THRESHOLD = 5.0;
 const _LOGO_ICON_HEIGHT = 48;
+const _MAX_BOTTOM_MENU_ITEMS = 5;
 
 const UserListItem = new Lang.Class({
     Name: 'UserListItem',
@@ -70,6 +72,9 @@ const UserListItem = new Lang.Class({
 
         this._userWidget = new UserWidget.UserWidget(this.user);
         layout.add(this._userWidget.actor);
+
+        this._userWidget.actor.bind_property('label-actor', this.actor, 'label-actor',
+                                             GObject.BindingFlags.SYNC_CREATE);
 
         this._timedLoginIndicator = new St.Bin({ style_class: 'login-dialog-timed-login-indicator',
                                                  scale_x: 0 });
@@ -279,7 +284,16 @@ const SessionMenuButton = new Lang.Class({
 
         this.actor = new St.Bin({ child: this._button });
 
-        this._menu = new PopupMenu.PopupMenu(this._button, 0, St.Side.TOP);
+        let side = St.Side.TOP;
+        let align = 0;
+        if (Gdm.get_session_ids().length > _MAX_BOTTOM_MENU_ITEMS) {
+            if (this.actor.text_direction == Clutter.TextDirection.RTL)
+                side = St.Side.RIGHT;
+            else
+                side = St.Side.LEFT;
+            align = 0.5;
+        }
+        this._menu = new PopupMenu.PopupMenu(this._button, align, side);
         Main.uiGroup.add_actor(this._menu.actor);
         this._menu.actor.hide();
 
@@ -375,18 +389,7 @@ const LoginDialog = new Lang.Class({
         parentActor.add_child(this.actor);
 
         this._userManager = AccountsService.UserManager.get_default()
-        let gdmClient = new Gdm.Client();
-
-        if (GLib.getenv('GDM_GREETER_TEST') != '1') {
-            this._greeter = gdmClient.get_greeter_sync(null);
-
-            this._defaultSessionChangedId = this._greeter.connect('default-session-name-changed',
-                                                                  Lang.bind(this, this._onDefaultSessionChanged));
-            this._sessionOpenedId = this._greeter.connect('session-opened',
-                                                          Lang.bind(this, this._onSessionOpened));
-            this._timedLoginRequestedId = this._greeter.connect('timed-login-requested',
-                                                                Lang.bind(this, this._onTimedLoginRequested));
-        }
+        this._gdmClient = new Gdm.Client();
 
         this._settings = new Gio.Settings({ schema_id: GdmUtil.LOGIN_SCREEN_SCHEMA });
 
@@ -416,7 +419,7 @@ const LoginDialog = new Lang.Class({
                                      x_fill: true,
                                      y_fill: true });
 
-        this._authPrompt = new AuthPrompt.AuthPrompt(gdmClient, AuthPrompt.AuthPromptMode.UNLOCK_OR_LOG_IN);
+        this._authPrompt = new AuthPrompt.AuthPrompt(this._gdmClient, AuthPrompt.AuthPromptMode.UNLOCK_OR_LOG_IN);
         this._authPrompt.connect('prompted', Lang.bind(this, this._onPrompted));
         this._authPrompt.connect('reset', Lang.bind(this, this._onReset));
         this._authPrompt.hide();
@@ -484,6 +487,10 @@ const LoginDialog = new Lang.Class({
         this._disableUserList = undefined;
         this._userListLoaded = false;
 
+        this._realmManager = new Realmd.Manager();
+        this._realmSignalId = this._realmManager.connect('login-format-changed',
+                                                         Lang.bind(this, this._showRealmLoginHint));
+
         LoginManager.getLoginManager().getCurrentSessionProxy(Lang.bind(this, this._gotGreeterSessionProxy));
 
         // If the user list is enabled, it should take key focus; make sure the
@@ -499,7 +506,7 @@ const LoginDialog = new Lang.Class({
         let [minWidth, minHeight, natWidth, natHeight] = this._bannerView.get_preferred_size();
         let centerX = dialogBox.x1 + (dialogBox.x2 - dialogBox.x1) / 2;
 
-        actorBox.x1 = centerX - natWidth / 2;
+        actorBox.x1 = Math.floor(centerX - natWidth / 2);
         actorBox.y1 = dialogBox.y1 + Main.layoutManager.panelBox.height;
         actorBox.x2 = actorBox.x1 + natWidth;
         actorBox.y2 = actorBox.y1 + natHeight;
@@ -513,7 +520,7 @@ const LoginDialog = new Lang.Class({
         let [minWidth, minHeight, natWidth, natHeight] = this._logoBin.get_preferred_size();
         let centerX = dialogBox.x1 + (dialogBox.x2 - dialogBox.x1) / 2;
 
-        actorBox.x1 = centerX - natWidth / 2;
+        actorBox.x1 = Math.floor(centerX - natWidth / 2);
         actorBox.y1 = dialogBox.y2 - natHeight;
         actorBox.x2 = actorBox.x1 + natWidth;
         actorBox.y2 = actorBox.y1 + natHeight;
@@ -528,8 +535,8 @@ const LoginDialog = new Lang.Class({
         let centerX = dialogBox.x1 + (dialogBox.x2 - dialogBox.x1) / 2;
         let centerY = dialogBox.y1 + (dialogBox.y2 - dialogBox.y1) / 2;
 
-        actorBox.x1 = centerX - natWidth / 2;
-        actorBox.y1 = centerY - natHeight / 2;
+        actorBox.x1 = Math.floor(centerX - natWidth / 2);
+        actorBox.y1 = Math.floor(centerY - natHeight / 2);
         actorBox.x2 = actorBox.x1 + natWidth;
         actorBox.y2 = actorBox.y1 + natHeight;
 
@@ -577,14 +584,21 @@ const LoginDialog = new Lang.Class({
         // try a different layout, or if we have what extra space we
         // can hand out
         if (bannerAllocation) {
-            let leftOverYSpace = dialogHeight - bannerHeight - authPromptHeight - logoHeight;
+            let bannerSpace;
+
+            if (authPromptAllocation)
+                bannerSpace = authPromptAllocation.y1 - bannerAllocation.y1;
+            else
+                bannerSpace = 0;
+
+            let leftOverYSpace = bannerSpace - bannerHeight;
 
             if (leftOverYSpace > 0) {
                  // First figure out how much left over space is up top
                  let leftOverTopSpace = leftOverYSpace / 2;
 
                  // Then, shift the banner into the middle of that extra space
-                 let yShift = leftOverTopSpace / 2;
+                 let yShift = Math.floor(leftOverTopSpace / 2);
 
                  bannerAllocation.y1 += yShift;
                  bannerAllocation.y2 += yShift;
@@ -610,8 +624,8 @@ const LoginDialog = new Lang.Class({
                      let centerGap = wideSpacing / 8;
 
                      // place the banner along the left edge of the center margin
-                     bannerAllocation.x2 = centerX - centerGap / 2;
-                     bannerAllocation.x1 = bannerAllocation.x2 - wideBannerWidth;
+                     bannerAllocation.x2 = Math.floor(centerX - centerGap / 2);
+                     bannerAllocation.x1 = Math.floor(bannerAllocation.x2 - wideBannerWidth);
 
                      // figure out how tall it would like to be and try to accomodate
                      // but don't let it get too close to the logo
@@ -619,11 +633,11 @@ const LoginDialog = new Lang.Class({
 
                      let maxWideHeight = dialogHeight - 3 * logoHeight;
                      wideBannerHeight = Math.min(maxWideHeight, wideBannerHeight);
-                     bannerAllocation.y1 = centerY - wideBannerHeight / 2;
+                     bannerAllocation.y1 = Math.floor(centerY - wideBannerHeight / 2);
                      bannerAllocation.y2 = bannerAllocation.y1 + wideBannerHeight;
 
                      // place the auth prompt along the right edge of the center margin
-                     authPromptAllocation.x1 = centerX + centerGap / 2;
+                     authPromptAllocation.x1 = Math.floor(centerX + centerGap / 2);
                      authPromptAllocation.x2 = authPromptAllocation.x1 + authPromptWidth;
                  } else {
                      // If we aren't going to do a wide view, then we need to limit
@@ -633,7 +647,7 @@ const LoginDialog = new Lang.Class({
                      leftOverYSpace += bannerHeight;
 
                      // Then figure out how much of that space is up top
-                     let availableTopSpace = leftOverYSpace / 2;
+                     let availableTopSpace = Math.floor(leftOverYSpace / 2);
 
                      // Then give all of that space to the banner
                      bannerAllocation.y2 = bannerAllocation.y1 + availableTopSpace;
@@ -644,7 +658,7 @@ const LoginDialog = new Lang.Class({
             let leftOverYSpace = dialogHeight - userSelectionHeight - logoHeight;
 
             if (leftOverYSpace > 0) {
-                let topExpansion = leftOverYSpace / 2;
+                let topExpansion = Math.floor(leftOverYSpace / 2);
                 let bottomExpansion = topExpansion;
 
                 userSelectionAllocation.y1 -= topExpansion;
@@ -720,6 +734,7 @@ const LoginDialog = new Lang.Class({
     },
 
     _fadeInBannerView: function() {
+        this._bannerView.show();
         Tweener.addTween(this._bannerView,
                          { opacity: 255,
                            time: _FADE_ANIMATION_TIME,
@@ -729,6 +744,7 @@ const LoginDialog = new Lang.Class({
     _hideBannerView: function() {
         Tweener.removeTweens(this._bannerView);
         this._bannerView.opacity = 0;
+        this._bannerView.hide();
     },
 
     _updateLogoTexture: function(cache, file) {
@@ -759,7 +775,24 @@ const LoginDialog = new Lang.Class({
         this._showPrompt();
     },
 
+    _resetGreeterProxy: function() {
+        if (GLib.getenv('GDM_GREETER_TEST') != '1') {
+            if (this._greeter) {
+                this._greeter.run_dispose();
+            }
+            this._greeter = this._gdmClient.get_greeter_sync(null);
+
+            this._defaultSessionChangedId = this._greeter.connect('default-session-name-changed',
+                                                                  Lang.bind(this, this._onDefaultSessionChanged));
+            this._sessionOpenedId = this._greeter.connect('session-opened',
+                                                          Lang.bind(this, this._onSessionOpened));
+            this._timedLoginRequestedId = this._greeter.connect('timed-login-requested',
+                                                                Lang.bind(this, this._onTimedLoginRequested));
+        }
+    },
+
     _onReset: function(authPrompt, beginRequest) {
+        this._resetGreeterProxy();
         this._sessionMenuButton.updateSensitivity(true);
 
         this._user = null;
@@ -818,25 +851,22 @@ const LoginDialog = new Lang.Class({
         this._authPrompt.setPasswordChar('');
         this._authPrompt.setQuestion(_("Username: "));
 
-        let realmManager = new Realmd.Manager();
-        let realmSignalId = realmManager.connect('login-format-changed',
-                                                 Lang.bind(this, this._showRealmLoginHint));
-        this._showRealmLoginHint(realmManager.loginFormat);
+        this._showRealmLoginHint(this._realmManager.loginFormat);
 
-        let nextSignalId = this._authPrompt.connect('next',
-                                                    Lang.bind(this, function() {
-                                                        this._authPrompt.disconnect(nextSignalId);
-                                                        this._authPrompt.updateSensitivity(false);
-                                                        let answer = this._authPrompt.getAnswer();
-                                                        this._user = this._userManager.get_user(answer);
-                                                        this._authPrompt.clear();
-                                                        this._authPrompt.startSpinning();
-                                                        this._authPrompt.begin({ userName: answer });
-                                                        this._updateCancelButton();
-
-                                                        realmManager.disconnect(realmSignalId)
-                                                        realmManager.release();
-                                                    }));
+        if (this._nextSignalId)
+            this._authPrompt.disconnect(this._nextSignalId);
+        this._nextSignalId = this._authPrompt.connect('next',
+                                                      Lang.bind(this, function() {
+                                                          this._authPrompt.disconnect(this._nextSignalId);
+                                                          this._nextSignalId = 0;
+                                                          this._authPrompt.updateSensitivity(false);
+                                                          let answer = this._authPrompt.getAnswer();
+                                                          this._user = this._userManager.get_user(answer);
+                                                          this._authPrompt.clear();
+                                                          this._authPrompt.startSpinning();
+                                                          this._authPrompt.begin({ userName: answer });
+                                                          this._updateCancelButton();
+                                                      }));
         this._updateCancelButton();
 
         this._authPrompt.updateSensitivity(true);
@@ -1074,18 +1104,11 @@ const LoginDialog = new Lang.Class({
     },
 
     _onUserListActivated: function(activatedItem) {
-        let tasks = [function() {
-                         return GdmUtil.cloneAndFadeOutActor(this._userSelectionBox);
-                     },
-                     function() {
-                         this._setUserListExpanded(false);
-                     }];
-
         this._user = activatedItem.user;
 
         this._updateCancelButton();
 
-        let batch = new Batch.ConcurrentBatch(this, [new Batch.ConsecutiveBatch(this, tasks),
+        let batch = new Batch.ConcurrentBatch(this, [GdmUtil.cloneAndFadeOutActor(this._userSelectionBox),
                                                      this._beginVerificationForItem(activatedItem)]);
         batch.run();
     },
@@ -1118,6 +1141,12 @@ const LoginDialog = new Lang.Class({
         if (this._greeterSessionProxy) {
             this._greeterSessionProxy.disconnect(this._greeterSessionProxyChangedId);
             this._greeterSessionProxy = null;
+        }
+        if (this._realmManager) {
+            this._realmManager.disconnect(this._realmSignalId);
+            this._realmSignalId = 0;
+            this._realmManager.release();
+            this._realmManager = null;
         }
     },
 

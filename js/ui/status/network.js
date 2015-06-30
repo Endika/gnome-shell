@@ -888,11 +888,11 @@ const NMWirelessDialog = new Lang.Class({
                                                x_align: Clutter.ActorAlign.CENTER,
                                                y_align: Clutter.ActorAlign.CENTER });
         this._airplaneIcon = new St.Icon({ icon_size: 48 });
-        this._airplaneHeadline = new St.Label({ style_class: 'nm-dialog-airplane-headline' });
+        this._airplaneHeadline = new St.Label({ style_class: 'nm-dialog-airplane-headline headline' });
         this._airplaneText = new St.Label({ style_class: 'nm-dialog-airplane-text' });
 
         let airplaneSubStack = new St.Widget({ layout_manager: new Clutter.BinLayout });
-        this._airplaneButton = new St.Button({ style_class: 'modal-dialog-button' });
+        this._airplaneButton = new St.Button({ style_class: 'modal-dialog-button button' });
         this._airplaneButton.connect('clicked', Lang.bind(this, function() {
             if (this._rfkill.airplaneMode)
                 this._rfkill.airplaneMode = false;

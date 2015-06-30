@@ -4,8 +4,6 @@
 srcdir=`dirname $0`
 test -z "$srcdir" && srcdir=.
 
-PKG_NAME="gnome-shell"
-
 (test -f $srcdir/configure.ac \
   && test -d $srcdir/src) || {
     echo -n "**Error**: Directory "\`$srcdir\'" does not look like the"
@@ -14,7 +12,7 @@ PKG_NAME="gnome-shell"
 }
 
 # Fetch submodules if needed
-if test ! -f src/gvc/Makefile.am;
+if test ! -f src/gvc/Makefile.am || test ! -f data/theme/gnome-shell-sass/COPYING;
 then
   echo "+ Setting up submodules"
   git submodule init
@@ -26,4 +24,4 @@ which gnome-autogen.sh || {
     echo "your OS vendor's package manager)."
     exit 1
 }
-USE_GNOME2_MACROS=1 USE_COMMON_DOC_BUILD=yes . gnome-autogen.sh
+. gnome-autogen.sh

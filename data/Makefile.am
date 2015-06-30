@@ -1,4 +1,5 @@
 CLEANFILES =
+NULL =
 
 desktopdir=$(datadir)/applications
 desktop_DATA = gnome-shell.desktop gnome-shell-wayland.desktop  gnome-shell-extension-prefs.desktop
@@ -11,7 +12,8 @@ service_DATA = org.gnome.Shell.PortalHelper.service
 
 CLEANFILES += \
 	org.gnome.Shell.PortalHelper.service \
-	org.gnome.Shell.PortalHelper.desktop
+	org.gnome.Shell.PortalHelper.desktop \
+	$(NULL)
 
 endif
 
@@ -33,7 +35,36 @@ introspection_DATA =				\
 	org.gnome.Shell.Screencast.xml		\
 	org.gnome.Shell.Screenshot.xml		\
 	org.gnome.ShellSearchProvider.xml	\
-	org.gnome.ShellSearchProvider2.xml
+	org.gnome.ShellSearchProvider2.xml	\
+	$(NULL)
+
+theme_sources = 						\
+	theme/gnome-shell-high-contrast.scss			\
+	theme/gnome-shell.scss					\
+	theme/gnome-shell-sass/_colors.scss			\
+	theme/gnome-shell-sass/_common.scss			\
+	theme/gnome-shell-sass/_drawing.scss			\
+	theme/gnome-shell-sass/_high-contrast-colors.scss	\
+	$(NULL)
+
+dist_theme_files =						\
+	$(theme_sources)					\
+	theme/Gemfile						\
+	theme/HACKING						\
+	theme/README						\
+	theme/gnome-shell-sass/COPYING				\
+	theme/gnome-shell-sass/HACKING				\
+	theme/gnome-shell-sass/NEWS				\
+	theme/gnome-shell-sass/README				\
+	theme/gnome-shell-sass/gnome-shell-sass.doap		\
+	theme/parse-sass.sh					\
+	$(NULL)
+
+%.css: %.scss $(theme_sources)
+	@if test -n "$(SASS)"; then \
+		if $(AM_V_P); then PS4= set -x; else echo "  GEN      $@"; fi; \
+		$(SASS) --sourcemap=none -f -q --update $<; \
+	fi
 
 resource_files = $(shell $(GLIB_COMPILE_RESOURCES) --sourcedir=$(srcdir)/theme --generate-dependencies $(srcdir)/gnome-shell-theme.gresource.xml)
 gnome-shell-theme.gresource: gnome-shell-theme.gresource.xml $(resource_files)
@@ -80,12 +111,14 @@ EXTRA_DIST =						\
 	$(menu_DATA)					\
 	$(convert_DATA)					\
 	$(keys_in_files)				\
+	$(dist_theme_files)				\
 	perf-background.xml.in				\
 	org.gnome.Shell.PortalHelper.desktop.in		\
 	org.gnome.Shell.PortalHelper.service.in		\
 	org.gnome.shell.gschema.xml.in.in		\
 	gnome-shell-theme.gresource.xml 		\
-	$(resource_files)
+	$(resource_files)				\
+	$(NULL)
 
 CLEANFILES +=						\
 	gnome-shell.desktop.in				\
@@ -98,4 +131,5 @@ CLEANFILES +=						\
 	gschemas.compiled				\
 	org.gnome.shell.gschema.valid			\
 	org.gnome.shell.gschema.xml.in			\
-	gnome-shell-theme.gresource
+	gnome-shell-theme.gresource			\
+	$(NULL)

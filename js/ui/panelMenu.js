@@ -128,6 +128,7 @@ const Button = new Lang.Class({
             Main.uiGroup.add_actor(this.menu.actor);
             this.menu.actor.hide();
         }
+        this.emit('menu-set');
     },
 
     _onEvent: function(actor, event) {
@@ -173,7 +174,8 @@ const Button = new Lang.Class({
         // menu is higher then the screen; it's useful if part of the menu is
         // scrollable so the minimum height is smaller than the natural height
         let workArea = Main.layoutManager.getWorkAreaForMonitor(Main.layoutManager.primaryIndex);
-        this.menu.actor.style = ('max-height: ' + Math.round(workArea.height) + 'px;');
+        let verticalMargins = this.menu.actor.margin_top + this.menu.actor.margin_bottom;
+        this.menu.actor.style = ('max-height: ' + Math.round(workArea.height - verticalMargins) + 'px;');
     },
 
     destroy: function() {

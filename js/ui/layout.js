@@ -11,6 +11,7 @@ const St = imports.gi.St;
 
 const Background = imports.ui.background;
 const BackgroundMenu = imports.ui.backgroundMenu;
+const LoginManager = imports.misc.loginManager;
 
 const DND = imports.ui.dnd;
 const Main = imports.ui.main;
@@ -20,11 +21,6 @@ const Tweener = imports.ui.tweener;
 const STARTUP_ANIMATION_TIME = 0.5;
 const KEYBOARD_ANIMATION_TIME = 0.15;
 const BACKGROUND_FADE_ANIMATION_TIME = 1.0;
-
-// The message tray takes this much pressure
-// in the pressure barrier at once to release it.
-const MESSAGE_TRAY_PRESSURE_THRESHOLD = 250; // pixels
-const MESSAGE_TRAY_PRESSURE_TIMEOUT = 1000; // ms
 
 const HOT_CORNER_PRESSURE_THRESHOLD = 100; // pixels
 const HOT_CORNER_PRESSURE_TIMEOUT = 1000; // ms
@@ -50,11 +46,16 @@ const MonitorConstraint = new Lang.Class({
                  'index': GObject.ParamSpec.int('index',
                                                 'Monitor index', 'Track specific monitor',
                                                 GObject.ParamFlags.READABLE | GObject.ParamFlags.WRITABLE,
-                                                -1, 64, -1)},
+                                                -1, 64, -1),
+                 'work-area': GObject.ParamSpec.boolean('work-area',
+                                                        'Work-area', 'Track monitor\'s work-area',
+                                                        GObject.ParamFlags.READABLE | GObject.ParamFlags.WRITABLE,
+                                                        false)},
 
     _init: function(props) {
         this._primary = false;
         this._index = -1;
+        this._workArea = false;
 
         this.parent(props);
     },
@@ -84,6 +85,19 @@ const MonitorConstraint = new Lang.Class({
         this.notify('index');
     },
 
+    get work_area() {
+        return this._workArea;
+    },
+
+    set work_area(v) {
+        if (v == this._workArea)
+            return;
+        this._workArea = v;
+        if (this.actor)
+            this.actor.queue_relayout();
+        this.notify('work-area');
+    },
+
     vfunc_set_actor: function(actor) {
         if (actor) {
             if (!this._monitorsChangedId) {
@@ -91,10 +105,21 @@ const MonitorConstraint = new Lang.Class({
                     this.actor.queue_relayout();
                 }));
             }
+
+            if (!this._workareasChangedId) {
+                this._workareasChangedId = global.screen.connect('workareas-changed', Lang.bind(this, function() {
+                    if (this._workArea)
+                        this.actor.queue_relayout();
+                }));
+            }
         } else {
             if (this._monitorsChangedId)
                 Main.layoutManager.disconnect(this._monitorsChangedId);
             this._monitorsChangedId = 0;
+
+            if (this._workareasChangedId)
+                global.screen.disconnect(this._workareasChangedId);
+            this._workareasChangedId = 0;
         }
 
         this.parent(actor);
@@ -104,15 +129,21 @@ const MonitorConstraint = new Lang.Class({
         if (!this._primary && this._index < 0)
             return;
 
-        let monitor;
-        if (this._primary) {
-            monitor = Main.layoutManager.primaryMonitor;
+        let index;
+        if (this._primary)
+            index = Main.layoutManager.primaryIndex;
+        else
+            index = Math.min(this._index, Main.layoutManager.monitors.length - 1);
+
+        let rect;
+        if (this._workArea) {
+            let ws = global.screen.get_workspace_by_index(0);
+            rect = ws.get_work_area_for_monitor(index);
         } else {
-            let index = Math.min(this._index, Main.layoutManager.monitors.length - 1);
-            monitor = Main.layoutManager.monitors[index];
+            rect = Main.layoutManager.monitors[index];
         }
 
-        actorBox.init_rect(monitor.x, monitor.y, monitor.width, monitor.height);
+        actorBox.init_rect(rect.x, rect.y, rect.width, rect.height);
     }
 });
 
@@ -135,6 +166,7 @@ const Monitor = new Lang.Class({
 const defaultParams = {
     trackFullscreen: false,
     affectsStruts: false,
+    affectsInputRegion: true
 };
 
 const LayoutManager = new Lang.Class({
@@ -149,7 +181,6 @@ const LayoutManager = new Lang.Class({
 
         this._keyboardIndex = -1;
         this._rightPanelBarrier = null;
-        this._trayBarrier = null;
 
         this._inOverview = false;
         this._updateRegionIdle = 0;
@@ -206,11 +237,6 @@ const LayoutManager = new Lang.Class({
         this.panelBox.connect('allocation-changed',
                               Lang.bind(this, this._panelBoxChanged));
 
-        this.trayBox = new St.Widget({ name: 'trayBox',
-                                       layout_manager: new Clutter.BinLayout() }); 
-        this.addChrome(this.trayBox);
-        this._setupTrayPressure();
-
         this.modalDialogGroup = new St.Widget({ name: 'modalDialogGroup',
                                                 layout_manager: new Clutter.BinLayout() });
         this.uiGroup.add_actor(this.modalDialogGroup);
@@ -248,6 +274,18 @@ const LayoutManager = new Lang.Class({
         global.screen.connect('in-fullscreen-changed',
                               Lang.bind(this, this._updateFullscreen));
         this._monitorsChanged();
+
+        // NVIDIA drivers don't preserve FBO contents across
+        // suspend/resume, see
+        // https://bugzilla.gnome.org/show_bug.cgi?id=739178
+        if (Shell.util_need_background_refresh()) {
+            LoginManager.getLoginManager().connect('prepare-for-sleep',
+                                                   function(lm, suspending) {
+                                                       if (suspending)
+                                                           return;
+                                                       Meta.Background.refresh_all();
+                                                   });
+        }
     },
 
     // This is called by Main after everything else is constructed
@@ -423,10 +461,6 @@ const LayoutManager = new Lang.Class({
         this.panelBox.set_size(this.primaryMonitor.width, -1);
 
         this.keyboardIndex = this.primaryIndex;
-
-        this.trayBox.set_position(this.bottomMonitor.x,
-                                  this.bottomMonitor.y + this.bottomMonitor.height);
-        this.trayBox.set_size(this.bottomMonitor.width, -1);
     },
 
     _panelBoxChanged: function() {
@@ -455,50 +489,9 @@ const LayoutManager = new Lang.Class({
         }
     },
 
-    _setupTrayPressure: function() {
-        this._trayPressure = new PressureBarrier(MESSAGE_TRAY_PRESSURE_THRESHOLD,
-                                                 MESSAGE_TRAY_PRESSURE_TIMEOUT,
-                                                 Shell.ActionMode.NORMAL |
-                                                 Shell.ActionMode.OVERVIEW);
-        this._trayPressure.setEventFilter(this._trayBarrierEventFilter);
-        this._trayPressure.connect('trigger', function(barrier) {
-            if (Main.layoutManager.bottomMonitor.inFullscreen)
-                return;
-
-            Main.messageTray.openTray();
-        });
-    },
-
-    _updateTrayBarrier: function() {
-        let monitor = this.bottomMonitor;
-
-        if (this._trayBarrier) {
-            this._trayPressure.removeBarrier(this._trayBarrier);
-            this._trayBarrier.destroy();
-            this._trayBarrier = null;
-        }
-
-        this._trayBarrier = new Meta.Barrier({ display: global.display,
-                                               x1: monitor.x, x2: monitor.x + monitor.width,
-                                               y1: monitor.y + monitor.height, y2: monitor.y + monitor.height,
-                                               directions: Meta.BarrierDirection.NEGATIVE_Y });
-        this._trayPressure.addBarrier(this._trayBarrier);
-    },
-
-    _trayBarrierEventFilter: function(event) {
-        // Throw out all events where the pointer was grabbed by another
-        // client, as the client that grabbed the pointer expects to have
-        // complete control over it
-        if (event.grabbed && Main.modalCount == 0)
-            return true;
-
-        return false;
-    },
-
     _monitorsChanged: function() {
         this._updateMonitors();
         this._updateBoxes();
-        this._updateTrayBarrier();
         this._updateHotCorners();
         this._updateBackgrounds();
         this._updateFullscreen();
@@ -608,7 +601,6 @@ const LayoutManager = new Lang.Class({
             // the UI group to get the correct allocation for the struts.
             this._updateRegions();
 
-            this.trayBox.hide();
             this.keyboardBox.hide();
 
             let monitor = this.primaryMonitor;
@@ -675,7 +667,6 @@ const LayoutManager = new Lang.Class({
 
         this._startingUp = false;
 
-        this.trayBox.show();
         this.keyboardBox.show();
 
         if (!Main.sessionMode.isGreeter) {
@@ -748,10 +739,11 @@ const LayoutManager = new Lang.Class({
     // @actor: an actor to add to the chrome
     // @params: (optional) additional params
     //
-    // Adds @actor to the chrome, and extends the input region
-    // to include it. Changes in @actor's size, position, and
-    // visibility will automatically result in appropriate changes
-    // to the input region.
+    // Adds @actor to the chrome, and (unless %affectsInputRegion in
+    // @params is %false) extends the input region to include it.
+    // Changes in @actor's size, position, and visibility will
+    // automatically result in appropriate changes to the input
+    // region.
     //
     // If %affectsStruts in @params is %true (and @actor is along a
     // screen edge), then @actor's size and position will also affect
@@ -845,6 +837,7 @@ const LayoutManager = new Lang.Class({
         // need to connect to 'destroy' too.
 
         this._trackedActors.push(actorData);
+        this._updateActorVisibility(actorData);
         this._queueUpdateRegions();
     },
 
@@ -863,25 +856,23 @@ const LayoutManager = new Lang.Class({
         this._queueUpdateRegions();
     },
 
+    _updateActorVisibility: function(actorData) {
+        if (!actorData.trackFullscreen)
+            return;
+
+        let monitor = this.findMonitorForActor(actorData.actor);
+        actorData.actor.visible = !(global.window_group.visible &&
+                                    monitor &&
+                                    monitor.inFullscreen);
+    },
+
     _updateVisibility: function() {
         let windowsVisible = Main.sessionMode.hasWindows && !this._inOverview;
 
         global.window_group.visible = windowsVisible;
         global.top_window_group.visible = windowsVisible;
 
-        for (let i = 0; i < this._trackedActors.length; i++) {
-            let actorData = this._trackedActors[i], visible;
-            if (!actorData.trackFullscreen)
-                continue;
-
-            if (!windowsVisible)
-                visible = true;
-            else if (this.findMonitorForActor(actorData.actor).inFullscreen)
-                visible = false;
-            else
-                visible = true;
-            actorData.actor.visible = visible;
-        }
+        this._trackedActors.forEach(Lang.bind(this, this._updateActorVisibility));
     },
 
     getWorkAreaForMonitor: function(monitorIndex) {
@@ -953,7 +944,7 @@ const LayoutManager = new Lang.Class({
 
         for (i = 0; i < this._trackedActors.length; i++) {
             let actorData = this._trackedActors[i];
-            if (!wantsInputRegion && !actorData.affectsStruts)
+            if (!(actorData.affectsInputRegion && wantsInputRegion) && !actorData.affectsStruts)
                 continue;
 
             let [x, y] = actorData.actor.get_transformed_position();
@@ -963,7 +954,7 @@ const LayoutManager = new Lang.Class({
             w = Math.round(w);
             h = Math.round(h);
 
-            if (wantsInputRegion && actorData.actor.get_paint_visibility())
+            if (actorData.affectsInputRegion && wantsInputRegion && actorData.actor.get_paint_visibility())
                 rects.push(new Meta.Rectangle({ x: x, y: y, width: w, height: h }));
 
             if (actorData.affectsStruts) {
@@ -973,46 +964,39 @@ const LayoutManager = new Lang.Class({
                 let y1 = Math.max(y, 0);
                 let y2 = Math.min(y + h, global.screen_height);
 
-                // NetWM struts are not really powerful enought to handle
-                // a multi-monitor scenario, they only describe what happens
-                // around the outer sides of the full display region. However
-                // it can describe a partial region along each side, so
-                // we can support having the struts only affect the
-                // primary monitor. This should be enough as we only have
-                // chrome affecting the struts on the primary monitor so
-                // far.
-                //
-                // Metacity wants to know what side of the screen the
-                // strut is considered to be attached to. If the actor is
+                // Metacity wants to know what side of the monitor the
+                // strut is considered to be attached to. First, we find
+                // the monitor that contains the strut. If the actor is
                 // only touching one edge, or is touching the entire
-                // border of the primary monitor, then it's obvious which
-                // side to call it. If it's in a corner, we pick a side
-                // arbitrarily. If it doesn't touch any edges, or it spans
-                // the width/height across the middle of the screen, then
-                // we don't create a strut for it at all.
+                // border of that monitor, then it's obvious which side
+                // to call it. If it's in a corner, we pick a side
+                // arbitrarily. If it doesn't touch any edges, or it
+                // spans the width/height across the middle of the
+                // screen, then we don't create a strut for it at all.
+
+                let monitor = this.findMonitorForActor(actorData.actor);
                 let side;
-                let primary = this.primaryMonitor;
-                if (x1 <= primary.x && x2 >= primary.x + primary.width) {
-                    if (y1 <= primary.y)
+                if (x1 <= monitor.x && x2 >= monitor.x + monitor.width) {
+                    if (y1 <= monitor.y)
                         side = Meta.Side.TOP;
-                    else if (y2 >= primary.y + primary.height)
+                    else if (y2 >= monitor.y + monitor.height)
                         side = Meta.Side.BOTTOM;
                     else
                         continue;
-                } else if (y1 <= primary.y && y2 >= primary.y + primary.height) {
-                    if (x1 <= 0)
+                } else if (y1 <= monitor.y && y2 >= monitor.y + monitor.height) {
+                    if (x1 <= monitor.x)
                         side = Meta.Side.LEFT;
-                    else if (x2 >= primary.x + primary.width)
+                    else if (x2 >= monitor.x + monitor.width)
                         side = Meta.Side.RIGHT;
                     else
                         continue;
-                } else if (x1 <= 0)
+                } else if (x1 <= monitor.x)
                     side = Meta.Side.LEFT;
-                else if (y1 <= 0)
+                else if (y1 <= monitor.y)
                     side = Meta.Side.TOP;
-                else if (x2 >= global.screen_width)
+                else if (x2 >= monitor.x + monitor.width)
                     side = Meta.Side.RIGHT;
-                else if (y2 >= global.screen_height)
+                else if (y2 >= monitor.y + monitor.height)
                     side = Meta.Side.BOTTOM;
                 else
                     continue;
@@ -1331,8 +1315,11 @@ const PressureBarrier = new Lang.Class({
     },
 
     _onBarrierLeft: function(barrier, event) {
-        this._reset();
-        this._isTriggered = false;
+        barrier._isHit = false;
+        if (this._barriers.every(function(b) { return !b._isHit; })) {
+            this._reset();
+            this._isTriggered = false;
+        }
     },
 
     _trigger: function() {
@@ -1342,6 +1329,8 @@ const PressureBarrier = new Lang.Class({
     },
 
     _onBarrierHit: function(barrier, event) {
+        barrier._isHit = true;
+
         // If we've triggered the barrier, wait until the pointer has the
         // left the barrier hitbox until we trigger it again.
         if (this._isTriggered)

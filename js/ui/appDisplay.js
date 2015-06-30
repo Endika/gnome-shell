@@ -517,9 +517,19 @@ const AllView = new Lang.Class({
             this.folderIcons.push(icon);
         }));
 
+        // Allow dragging of the icon only if the Dash would accept a drop to
+        // change favorite-apps. There are no other possible drop targets from
+        // the app picker, so there's no other need for a drag to start,
+        // at least on single-monitor setups.
+        // This also disables drag-to-launch on multi-monitor setups,
+        // but we hope that is not used much.
+        let favoritesWritable = global.settings.is_writable('favorite-apps');
+
         apps.forEach(Lang.bind(this, function(appId) {
             let app = appSys.lookup_app(appId);
-            let icon = new AppIcon(app);
+
+            let icon = new AppIcon(app,
+                                   { isDraggable: favoritesWritable });
             this.addItem(icon);
         }));
 
@@ -529,6 +539,13 @@ const AllView = new Lang.Class({
 
     // Overriden from BaseAppView
     animate: function (animationDirection, onComplete) {
+        this._scrollView.reactive = false;
+        let completionFunc = Lang.bind(this, function() {
+            this._scrollView.reactive = true;
+            if (onComplete)
+                onComplete();
+        });
+
         if (animationDirection == IconGrid.AnimationDirection.OUT &&
             this._displayingPopup && this._currentPopup) {
             this._currentPopup.popdown();
@@ -539,10 +556,10 @@ const AllView = new Lang.Class({
                     // signal handler, call again animate which will
                     // call the parent given that popup is already
                     // closed.
-                    this.animate(animationDirection, onComplete);
+                    this.animate(animationDirection, completionFunc);
                 }));
         } else {
-            this.parent(animationDirection, onComplete);
+            this.parent(animationDirection, completionFunc);
             if (animationDirection == IconGrid.AnimationDirection.OUT)
                 this._pageIndicators.animateIndicators(animationDirection);
         }
@@ -629,7 +646,7 @@ const AllView = new Lang.Class({
     },
 
     _onScroll: function(actor, event) {
-        if (this._displayingPopup)
+        if (this._displayingPopup || !this._scrollView.reactive)
             return Clutter.EVENT_STOP;
 
         let direction = event.get_scroll_direction();
@@ -736,7 +753,8 @@ const AllView = new Lang.Class({
         let fadeOffset = Math.min(this._grid.topPadding,
                                   this._grid.bottomPadding);
         this._scrollView.update_fade_effect(fadeOffset, 0);
-        this._scrollView.get_effect('fade').fade_edges = true;
+        if (fadeOffset > 0)
+            this._scrollView.get_effect('fade').fade_edges = true;
 
         if (this._availWidth != availWidth || this._availHeight != availHeight || oldNPages != this._grid.nPages()) {
             this._adjustment.value = 0;
@@ -763,6 +781,7 @@ const FrequentView = new Lang.Class({
 
     _init: function() {
         this.parent(null, { fillParent: true });
+
         this.actor = new St.Widget({ style_class: 'frequent-apps',
                                      layout_manager: new Clutter.BinLayout(),
                                      x_expand: true, y_expand: true });
@@ -799,10 +818,19 @@ const FrequentView = new Lang.Class({
         if(!hasUsefulData)
             return;
 
+        // Allow dragging of the icon only if the Dash would accept a drop to
+        // change favorite-apps. There are no other possible drop targets from
+        // the app picker, so there's no other need for a drag to start,
+        // at least on single-monitor setups.
+        // This also disables drag-to-launch on multi-monitor setups,
+        // but we hope that is not used much.
+        let favoritesWritable = global.settings.is_writable('favorite-apps');
+
         for (let i = 0; i < mostUsed.length; i++) {
             if (!mostUsed[i].get_app_info().should_show())
                 continue;
-            let appIcon = new AppIcon(mostUsed[i]);
+            let appIcon = new AppIcon(mostUsed[i],
+                                      { isDraggable: favoritesWritable });
             this._grid.addItem(appIcon, -1);
         }
     },
@@ -879,14 +907,14 @@ const AppDisplay = new Lang.Class({
         let view, button;
         view = new FrequentView();
         button = new St.Button({ label: _("Frequent"),
-                                 style_class: 'app-view-control',
+                                 style_class: 'app-view-control button',
                                  can_focus: true,
                                  x_expand: true });
         this._views[Views.FREQUENT] = { 'view': view, 'control': button };
 
         view = new AllView();
         button = new St.Button({ label: _("All"),
-                                 style_class: 'app-view-control',
+                                 style_class: 'app-view-control button',
                                  can_focus: true,
                                  x_expand: true });
         this._views[Views.ALL] = { 'view': view, 'control': button };
@@ -1523,15 +1551,33 @@ const AppIcon = new Lang.Class({
                                      can_focus: true,
                                      x_fill: true,
                                      y_fill: true });
+
+        this._dot = new St.Widget({ style_class: 'app-well-app-running-dot',
+                                    layout_manager: new Clutter.BinLayout(),
+                                    x_expand: true, y_expand: true,
+                                    x_align: Clutter.ActorAlign.CENTER,
+                                    y_align: Clutter.ActorAlign.END });
+
+        this._iconContainer = new St.Widget({ layout_manager: new Clutter.BinLayout(),
+                                              x_expand: true, y_expand: true });
+
+        this.actor.set_child(this._iconContainer);
+        this._iconContainer.add_child(this._dot);
+
         this.actor._delegate = this;
 
         if (!iconParams)
             iconParams = {};
 
+        // Get the isDraggable property without passing it on to the BaseIcon:
+        let appIconParams = Params.parse(iconParams, { isDraggable: true }, true);
+        let isDraggable = appIconParams['isDraggable'];
+        delete iconParams['isDraggable'];
+
         iconParams['createIcon'] = Lang.bind(this, this._createIcon);
         iconParams['setSizeManually'] = true;
         this.icon = new IconGrid.BaseIcon(app.get_name(), iconParams);
-        this.actor.set_child(this.icon.actor);
+        this._iconContainer.add_child(this.icon.actor);
 
         this.actor.label_actor = this.icon.label;
 
@@ -1544,20 +1590,22 @@ const AppIcon = new Lang.Class({
         this._menu = null;
         this._menuManager = new PopupMenu.PopupMenuManager(this);
 
-        this._draggable = DND.makeDraggable(this.actor);
-        this._draggable.connect('drag-begin', Lang.bind(this,
-            function () {
-                this._removeMenuTimeout();
-                Main.overview.beginItemDrag(this);
-            }));
-        this._draggable.connect('drag-cancelled', Lang.bind(this,
-            function () {
-                Main.overview.cancelledItemDrag(this);
-            }));
-        this._draggable.connect('drag-end', Lang.bind(this,
-            function () {
-               Main.overview.endItemDrag(this);
-            }));
+        if (isDraggable) {
+            this._draggable = DND.makeDraggable(this.actor);
+            this._draggable.connect('drag-begin', Lang.bind(this,
+                function () {
+                    this._removeMenuTimeout();
+                    Main.overview.beginItemDrag(this);
+                }));
+            this._draggable.connect('drag-cancelled', Lang.bind(this,
+                function () {
+                    Main.overview.cancelledItemDrag(this);
+                }));
+            this._draggable.connect('drag-end', Lang.bind(this,
+                function () {
+                   Main.overview.endItemDrag(this);
+                }));
+        }
 
         this.actor.connect('destroy', Lang.bind(this, this._onDestroy));
 
@@ -1589,9 +1637,9 @@ const AppIcon = new Lang.Class({
 
     _updateRunningStyle: function() {
         if (this.app.state != Shell.AppState.STOPPED)
-            this.actor.add_style_class_name('running');
+            this._dot.show();
         else
-            this.actor.remove_style_class_name('running');
+            this._dot.hide();
     },
 
     _setPopupTimeout: function() {
@@ -1645,7 +1693,9 @@ const AppIcon = new Lang.Class({
     popupMenu: function() {
         this._removeMenuTimeout();
         this.actor.fake_release();
-        this._draggable.fakeRelease();
+
+        if (this._draggable)
+            this._draggable.fakeRelease();
 
         if (!this._menu) {
             this._menu = new AppIconMenu(this);
@@ -1656,7 +1706,10 @@ const AppIcon = new Lang.Class({
                 if (!isPoppedUp)
                     this._onMenuPoppedDown();
             }));
-            Main.overview.connect('hiding', Lang.bind(this, function () { this._menu.close(); }));
+            let id = Main.overview.connect('hiding', Lang.bind(this, function () { this._menu.close(); }));
+            this.actor.connect('destroy', function() {
+                Main.overview.disconnect(id);
+            });
 
             this._menuManager.addMenu(this._menu);
         }
@@ -1785,7 +1838,10 @@ const AppIconMenu = new Lang.Class({
         if (!this._source.app.is_window_backed()) {
             this._appendSeparator();
 
-            if (this._source.app.can_open_new_window()) {
+            let appInfo = this._source.app.get_app_info();
+            let actions = appInfo.list_actions();
+            if (this._source.app.can_open_new_window() &&
+                actions.indexOf('new-window') == -1) {
                 this._newWindowMenuItem = this._appendMenuItem(_("New Window"));
                 this._newWindowMenuItem.connect('activate', Lang.bind(this, function() {
                     if (this._source.app.state == Shell.AppState.STOPPED)
@@ -1797,8 +1853,6 @@ const AppIconMenu = new Lang.Class({
                 this._appendSeparator();
             }
 
-            let appInfo = this._source.app.get_app_info();
-            let actions = appInfo.list_actions();
             for (let i = 0; i < actions.length; i++) {
                 let action = actions[i];
                 let item = this._appendMenuItem(appInfo.get_action_name(action));
@@ -1807,22 +1861,27 @@ const AppIconMenu = new Lang.Class({
                     this.emit('activate-window', null);
                 }));
             }
-            this._appendSeparator();
 
-            let isFavorite = AppFavorites.getAppFavorites().isFavorite(this._source.app.get_id());
+            let canFavorite = global.settings.is_writable('favorite-apps');
 
-            if (isFavorite) {
-                let item = this._appendMenuItem(_("Remove from Favorites"));
-                item.connect('activate', Lang.bind(this, function() {
-                    let favs = AppFavorites.getAppFavorites();
-                    favs.removeFavorite(this._source.app.get_id());
-                }));
-            } else {
-                let item = this._appendMenuItem(_("Add to Favorites"));
-                item.connect('activate', Lang.bind(this, function() {
-                    let favs = AppFavorites.getAppFavorites();
-                    favs.addFavorite(this._source.app.get_id());
-                }));
+            if (canFavorite) {
+                this._appendSeparator();
+
+                let isFavorite = AppFavorites.getAppFavorites().isFavorite(this._source.app.get_id());
+
+                if (isFavorite) {
+                    let item = this._appendMenuItem(_("Remove from Favorites"));
+                    item.connect('activate', Lang.bind(this, function() {
+                        let favs = AppFavorites.getAppFavorites();
+                        favs.removeFavorite(this._source.app.get_id());
+                    }));
+                } else {
+                    let item = this._appendMenuItem(_("Add to Favorites"));
+                    item.connect('activate', Lang.bind(this, function() {
+                        let favs = AppFavorites.getAppFavorites();
+                        favs.addFavorite(this._source.app.get_id());
+                    }));
+                }
             }
 
             if (Shell.AppSystem.get_default().lookup_app('org.gnome.Software.desktop')) {

@@ -18,9 +18,11 @@ const Environment = imports.ui.environment;
 const ExtensionSystem = imports.ui.extensionSystem;
 const ExtensionDownloader = imports.ui.extensionDownloader;
 const Keyboard = imports.ui.keyboard;
+const LegacyTray = imports.ui.legacyTray;
 const MessageTray = imports.ui.messageTray;
 const ModalDialog = imports.ui.modalDialog;
 const OsdWindow = imports.ui.osdWindow;
+const OsdMonitorLabeler = imports.ui.osdMonitorLabeler;
 const Overview = imports.ui.overview;
 const Panel = imports.ui.panel;
 const Params = imports.misc.params;
@@ -51,12 +53,14 @@ let overview = null;
 let runDialog = null;
 let lookingGlass = null;
 let wm = null;
+let legacyTray = null;
 let messageTray = null;
 let screenShield = null;
 let notificationDaemon = null;
 let windowAttentionHandler = null;
 let ctrlAltTabManager = null;
 let osdWindowManager = null;
+let osdMonitorLabeler = null;
 let sessionMode = null;
 let shellDBusService = null;
 let shellMountOpDBusService = null;
@@ -150,14 +154,16 @@ function _initializeUI() {
     xdndHandler = new XdndHandler.XdndHandler();
     ctrlAltTabManager = new CtrlAltTab.CtrlAltTabManager();
     osdWindowManager = new OsdWindow.OsdWindowManager();
+    osdMonitorLabeler = new OsdMonitorLabeler.OsdMonitorLabeler();
     overview = new Overview.Overview();
     wm = new WindowManager.WindowManager();
     magnifier = new Magnifier.Magnifier();
     if (LoginManager.canLock())
         screenShield = new ScreenShield.ScreenShield();
 
-    panel = new Panel.Panel();
+    legacyTray = new LegacyTray.LegacyTray();
     messageTray = new MessageTray.MessageTray();
+    panel = new Panel.Panel();
     keyboard = new Keyboard.Keyboard();
     notificationDaemon = new NotificationDaemon.NotificationDaemon();
     windowAttentionHandler = new WindowAttentionHandler.WindowAttentionHandler();
@@ -215,16 +221,10 @@ function _initializeUI() {
         if (screenShield) {
             screenShield.lockIfWasLocked();
         }
-        if (LoginManager.haveSystemd() &&
-            sessionMode.currentMode != 'gdm' &&
+        if (sessionMode.currentMode != 'gdm' &&
             sessionMode.currentMode != 'initial-setup') {
-            // Do not import globally to not depend
-            // on systemd on non-systemd systems.
-            let GSystem = imports.gi.GSystem;
-            GSystem.log_structured_print('GNOME Shell started at ' + _startDate,
-                                         ['MESSAGE_ID=' + GNOMESHELL_STARTED_MESSAGE_ID]);
-        } else {
-            log('GNOME Shell started at ' + _startDate);
+            Shell.Global.log_structured('GNOME Shell started at ' + _startDate,
+                                        ['MESSAGE_ID=' + GNOMESHELL_STARTED_MESSAGE_ID]);
         }
     });
 }
@@ -529,6 +529,7 @@ function activateWindow(window, time, workspaceNum) {
     }
 
     overview.hide();
+    panel.closeCalendar();
 }
 
 // TODO - replace this timeout with some system to guess when the user might
@@ -656,7 +657,7 @@ const RestartMessage = new Lang.Class({
 
     _init : function(message) {
         this.parent({ shellReactive: true,
-                      styleClass: 'restart-message',
+                      styleClass: 'restart-message headline',
                       shouldFadeIn: false,
                       destroyOnClose: true });
 

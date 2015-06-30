@@ -18,8 +18,6 @@ const Workspace = imports.ui.workspace;
 const WorkspaceThumbnail = imports.ui.workspaceThumbnail;
 
 const WORKSPACE_SWITCH_TIME = 0.25;
-// Note that mutter has a compile-time limit of 36
-const MAX_WORKSPACES = 16;
 
 const AnimationType = {
     ZOOM: 0,
@@ -98,8 +96,6 @@ const WorkspacesView = new Lang.Class({
         this._animating = false; // tweening
         this._scrolling = false; // swipe-scrolling
         this._animatingScroll = false; // programatically updating the adjustment
-
-        this._settings = new Gio.Settings({ schema_id: OVERRIDE_SCHEMA });
 
         let activeWorkspaceIndex = global.screen.get_active_workspace_index();
         this.scrollAdjustment = new St.Adjustment({ value: activeWorkspaceIndex,
@@ -420,7 +416,7 @@ const WorkspacesDisplay = new Lang.Class({
         this.actor.connect('notify::allocation', Lang.bind(this, this._updateWorkspacesActualGeometry));
         this.actor.connect('parent-set', Lang.bind(this, this._parentSet));
 
-        let clickAction = new Clutter.ClickAction()
+        let clickAction = new Clutter.ClickAction();
         clickAction.connect('clicked', Lang.bind(this, function(action) {
             // Only switch to the workspace when there's no application
             // windows open. The problem is that it's too easy to miss
@@ -466,6 +462,7 @@ const WorkspacesDisplay = new Lang.Class({
 
         this._notifyOpacityId = 0;
         this._scrollEventId = 0;
+        this._keyPressEventId = 0;
 
         this._fullGeometry = null;
     },
@@ -497,6 +494,9 @@ const WorkspacesDisplay = new Lang.Class({
                                   Lang.bind(this, this._onRestacked));
         if (this._scrollEventId == 0)
             this._scrollEventId = Main.overview.connect('scroll-event', Lang.bind(this, this._onScrollEvent));
+
+        if (this._keyPressEventId == 0)
+            this._keyPressEventId = global.stage.connect('key-press-event', Lang.bind(this, this._onKeyPressEvent));
     },
 
     animateFromOverview: function(fadeOnPrimary) {
@@ -519,7 +519,10 @@ const WorkspacesDisplay = new Lang.Class({
             Main.overview.disconnect(this._scrollEventId);
             this._scrollEventId = 0;
         }
-
+        if (this._keyPressEventId > 0) {
+            global.stage.disconnect(this._keyPressEventId);
+            this._keyPressEventId = 0;
+        }
         for (let i = 0; i < this._workspacesViews.length; i++)
             this._workspacesViews[i].destroy();
         this._workspacesViews = [];
@@ -538,6 +541,7 @@ const WorkspacesDisplay = new Lang.Class({
         for (let i = 0; i < this._workspacesViews.length; i++)
             this._workspacesViews[i].destroy();
 
+        this._primaryIndex = Main.layoutManager.primaryIndex;
         this._workspacesViews = [];
         let monitors = Main.layoutManager.monitors;
         for (let i = 0; i < monitors.length; i++) {
@@ -664,6 +668,25 @@ const WorkspacesDisplay = new Lang.Class({
             ws = activeWs.get_neighbor(Meta.MotionDirection.UP);
             break;
         case Clutter.ScrollDirection.DOWN:
+            ws = activeWs.get_neighbor(Meta.MotionDirection.DOWN);
+            break;
+        default:
+            return Clutter.EVENT_PROPAGATE;
+        }
+        Main.wm.actionMoveWorkspace(ws);
+        return Clutter.EVENT_STOP;
+    },
+
+    _onKeyPressEvent: function(actor, event) {
+        if (!this.actor.mapped)
+            return Clutter.EVENT_PROPAGATE;
+        let activeWs = global.screen.get_active_workspace();
+        let ws;
+        switch (event.get_key_symbol()) {
+        case Clutter.KEY_Page_Up:
+            ws = activeWs.get_neighbor(Meta.MotionDirection.UP);
+            break;
+        case Clutter.KEY_Page_Down:
             ws = activeWs.get_neighbor(Meta.MotionDirection.DOWN);
             break;
         default:

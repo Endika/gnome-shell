@@ -38,7 +38,8 @@ enum
 
   PROP_GICON,
   PROP_ICON_NAME,
-  PROP_ICON_SIZE
+  PROP_ICON_SIZE,
+  PROP_FALLBACK_ICON_NAME
 };
 
 G_DEFINE_TYPE (StIcon, st_icon, ST_TYPE_WIDGET)
@@ -56,8 +57,9 @@ struct _StIconPrivate
   gint          prop_icon_size;  /* icon size set as property */
   gint          theme_icon_size; /* icon size from theme node */
   gint          icon_size;       /* icon size we are using */
+  GIcon        *fallback_gicon;
 
-  CoglHandle    shadow_material;
+  CoglPipeline *shadow_pipeline;
   float         shadow_width;
   float         shadow_height;
   StShadow     *shadow_spec;
@@ -90,6 +92,10 @@ st_icon_set_property (GObject      *gobject,
       st_icon_set_icon_size (icon, g_value_get_int (value));
       break;
 
+    case PROP_FALLBACK_ICON_NAME:
+      st_icon_set_fallback_icon_name (icon, g_value_get_string (value));
+      break;
+
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (gobject, prop_id, pspec);
       break;
@@ -118,6 +124,10 @@ st_icon_get_property (GObject    *gobject,
       g_value_set_int (value, st_icon_get_icon_size (icon));
       break;
 
+    case PROP_FALLBACK_ICON_NAME:
+      g_value_set_string (value, st_icon_get_fallback_icon_name (icon));
+      break;
+
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (gobject, prop_id, pspec);
       break;
@@ -142,23 +152,10 @@ st_icon_dispose (GObject *gobject)
       priv->pending_texture = NULL;
     }
 
-  if (priv->gicon)
-    {
-      g_object_unref (priv->gicon);
-      priv->gicon = NULL;
-    }
-
-  if (priv->shadow_material)
-    {
-      cogl_handle_unref (priv->shadow_material);
-      priv->shadow_material = COGL_INVALID_HANDLE;
-    }
-
-  if (priv->shadow_spec)
-    {
-      st_shadow_unref (priv->shadow_spec);
-      priv->shadow_spec = NULL;
-    }
+  g_clear_object (&priv->gicon);
+  g_clear_object (&priv->fallback_gicon);
+  g_clear_pointer (&priv->shadow_pipeline, cogl_object_unref);
+  g_clear_pointer (&priv->shadow_spec, st_shadow_unref);
 
   G_OBJECT_CLASS (st_icon_parent_class)->dispose (gobject);
 }
@@ -172,7 +169,7 @@ st_icon_paint (ClutterActor *actor)
 
   if (priv->icon_texture)
     {
-      if (priv->shadow_material)
+      if (priv->shadow_pipeline)
         {
           ClutterActorBox allocation;
           float width, height;
@@ -181,7 +178,7 @@ st_icon_paint (ClutterActor *actor)
           clutter_actor_box_get_size (&allocation, &width, &height);
 
           _st_paint_shadow_with_opacity (priv->shadow_spec,
-                                         priv->shadow_material,
+                                         priv->shadow_pipeline,
                                          &allocation,
                                          clutter_actor_get_paint_opacity (priv->icon_texture));
         }
@@ -197,17 +194,8 @@ st_icon_style_changed (StWidget *widget)
   StThemeNode *theme_node = st_widget_get_theme_node (widget);
   StIconPrivate *priv = self->priv;
 
-  if (priv->shadow_spec)
-    {
-      st_shadow_unref (priv->shadow_spec);
-      priv->shadow_spec = NULL;
-    }
-
-  if (priv->shadow_material)
-    {
-      cogl_handle_unref (priv->shadow_material);
-      priv->shadow_material = COGL_INVALID_HANDLE;
-    }
+  g_clear_pointer (&priv->shadow_pipeline, cogl_object_unref);
+  g_clear_pointer (&priv->shadow_spec, st_shadow_unref);
 
   priv->shadow_spec = st_theme_node_get_shadow (theme_node, "icon-shadow");
 
@@ -261,6 +249,12 @@ st_icon_class_init (StIconClass *klass)
                             -1, G_MAXINT, -1,
                             ST_PARAM_READWRITE);
   g_object_class_install_property (object_class, PROP_ICON_SIZE, pspec);
+
+  pspec = g_param_spec_string ("fallback-icon-name",
+                               "Fallback icon name",
+                               "A fallback icon name",
+                               NULL, ST_PARAM_READWRITE);
+  g_object_class_install_property (object_class, PROP_FALLBACK_ICON_NAME, pspec);
 }
 
 static void
@@ -277,33 +271,26 @@ st_icon_init (StIcon *self)
   self->priv->icon_size = DEFAULT_ICON_SIZE;
   self->priv->prop_icon_size = -1;
 
-  self->priv->shadow_material = COGL_INVALID_HANDLE;
+  self->priv->shadow_pipeline = NULL;
   self->priv->shadow_width = -1;
   self->priv->shadow_height = -1;
 }
 
 static void
-st_icon_update_shadow_material (StIcon *icon)
+st_icon_update_shadow_pipeline (StIcon *icon)
 {
   StIconPrivate *priv = icon->priv;
 
-  if (priv->shadow_material)
-    {
-      cogl_handle_unref (priv->shadow_material);
-      priv->shadow_material = COGL_INVALID_HANDLE;
-    }
+  g_clear_pointer (&priv->shadow_pipeline, cogl_object_unref);
 
   if (priv->shadow_spec)
    {
-     CoglHandle material;
      gint width, height;
 
      clutter_texture_get_base_size (CLUTTER_TEXTURE (priv->icon_texture),
                                     &width, &height);
 
-     material = _st_create_shadow_material_from_actor (priv->shadow_spec,
-                                                       priv->icon_texture);
-     priv->shadow_material = material;
+     priv->shadow_pipeline = _st_create_shadow_pipeline_from_actor (priv->shadow_spec, priv->icon_texture);
      priv->shadow_width = width;
      priv->shadow_height = height;
    }
@@ -313,7 +300,7 @@ static void
 on_pixbuf_changed (ClutterTexture *texture,
                    StIcon         *icon)
 {
-  st_icon_update_shadow_material (icon);
+  st_icon_update_shadow_pipeline (icon);
 }
 
 static void
@@ -338,7 +325,7 @@ st_icon_finish_update (StIcon *icon)
       /* Remove the temporary ref we added */
       g_object_unref (priv->icon_texture);
 
-      st_icon_update_shadow_material (icon);
+      st_icon_update_shadow_pipeline (icon);
 
       /* "pixbuf-change" is actually a misnomer for "texture-changed" */
       g_signal_connect_object (priv->icon_texture, "pixbuf-change",
@@ -387,14 +374,20 @@ st_icon_update (StIcon *icon)
   g_object_get (context, "scale-factor", &scale, NULL);
 
   cache = st_texture_cache_get_default ();
-  if (priv->gicon)
-    {
-      priv->pending_texture = st_texture_cache_load_gicon (cache,
-                                                           theme_node,
-                                                           priv->gicon,
-                                                           priv->icon_size,
-                                                           scale);
-    }
+
+  if (priv->gicon != NULL)
+    priv->pending_texture = st_texture_cache_load_gicon (cache,
+                                                         theme_node,
+                                                         priv->gicon,
+                                                         priv->icon_size,
+                                                         scale);
+
+  if (priv->pending_texture == NULL && priv->fallback_gicon != NULL)
+    priv->pending_texture = st_texture_cache_load_gicon (cache,
+                                                         theme_node,
+                                                         priv->fallback_gicon,
+                                                         priv->icon_size,
+                                                         scale);
 
   if (priv->pending_texture)
     {
@@ -598,4 +591,48 @@ st_icon_set_icon_size (StIcon *icon,
         st_icon_update (icon);
       g_object_notify (G_OBJECT (icon), "icon-size");
     }
+}
+
+const gchar *
+st_icon_get_fallback_icon_name (StIcon *icon)
+{
+  StIconPrivate *priv;
+
+  g_return_val_if_fail (ST_IS_ICON (icon), NULL);
+
+  priv = icon->priv;
+
+  if (priv->fallback_gicon && G_IS_THEMED_ICON (priv->fallback_gicon))
+    return g_themed_icon_get_names (G_THEMED_ICON (priv->fallback_gicon)) [0];
+  else
+    return NULL;
+}
+
+void
+st_icon_set_fallback_icon_name (StIcon      *icon,
+                                const gchar *fallback_icon_name)
+{
+  StIconPrivate *priv = icon->priv;
+  GIcon *gicon = NULL;
+
+  g_return_if_fail (ST_IS_ICON (icon));
+
+  if (fallback_icon_name != NULL)
+    gicon = g_themed_icon_new_with_default_fallbacks (fallback_icon_name);
+
+  if (g_icon_equal (priv->fallback_gicon, gicon)) /* do nothing */
+    {
+      if (gicon)
+        g_object_unref (gicon);
+      return;
+    }
+
+  if (priv->fallback_gicon)
+    g_object_unref (priv->fallback_gicon);
+
+  priv->fallback_gicon = gicon;
+
+  g_object_notify (G_OBJECT (icon), "fallback-icon-name");
+
+  st_icon_update (icon);
 }

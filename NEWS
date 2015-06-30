@@ -1,3 +1,206 @@
+3.17.2
+======
+* Remove StTable widget [Florian; #703833]
+* Increase visibility of expanders in alt-tab popup [Jakub; #745058]
+* Ensure suspend inhibitors are released when VT switched away [Rui; #749228]
+* Use iio-sensor-proxy directly for orientation lock [Bastien; #749671]
+* Misc. bug fixes [Florian, Lan, Carlos; #749279, #749383, #749529, #749490,
+  #749742]
+
+Contributors:
+  Carlos Garnacho, Ting-Wei Lan, Rui Matos, Florian Müllner, Bastien Nocera,
+  Jakub Steiner
+
+Translations:
+  Yosef Or Boczko [he], sun [zh_CN], Felipe Braga [pt_BR],
+  Victor Ibragimov [tg], Gábor Kelemen [hu], Cédric Valmary [oc],
+  Dušan Kazik [sk], Kjartan Maraas [nb], Bruno Ramalhete [pt],
+  Matej Urbančič [sl], Daniel Mustieles [es]
+
+3.17.1
+======
+* Add Display Settings entry to background menu [Meet; #697346]
+* Add window menu option to move to different monitor [Isaac; #633994]
+* Improve switch style in default/highContrast themes [Jakub; #746294, #747912]
+* Make event highlight in calendar more prominent [Jakub; #747715]
+* Fix keyboard focus when focusing a notification banner [Florian; #747205]
+* Move notification banners below the dateMenu [Meet, Florian; #745910]
+* Misc. bug fixes [Mario, Rui; #748338, #748541]
+
+Contributors:
+  Isaac Ge, Rui Matos, Florian Müllner, Meet Parikh, Mario Sanchez Prada,
+  Jakub Steiner, Jasper St. Pierre
+
+Translations:
+  Sveinn í Felli [is], Marek Černocký [cs], laurent Soleil [oc]
+
+3.16.1
+======
+* gdm: Move long session chooser menus to the side [Florian; #734352]
+* Work around background corruption with NVIDIA driver [Rui; #739178]
+* Don't allow move-to-workspace for always-sticky windows [Florian; #746782]
+* Allow switching workspaces with PgUp/PgDown in overview [Devyani; #742581]
+* Bump time PAM messages are displayed [Sarvjeet; #720885]
+* Fix "stutter" when moving window past the last workspace [Shivam; #712778]
+* Fix blurred text on login screen [Clément; #746912]
+* keyboard: Restore whole MRU list after password mode [Rui; #746605]
+* Pass event timestamps when activating remote actions [Owen; #747323]
+* Fix hung login screen when password is typed too quickly [Shivam; #737586]
+* Make on-screen keyboard work for shell chrome on wayland [Rui; #747274]
+* Implement reexec_self() for FreeBSD [Ting-Wei; #747788]
+* Allow to dismiss resident notifications [Florian; #746860]
+* Temporarily reveal legacy tray when icons are added [Florian; #746025]
+* Make concealed tray smaller to minimize overlap with apps [Florian; #746787]
+* Misc. bug fixes [Florian, Rui, Giovanni; #746323, #746579, #746902, #746364,
+  #746509, #747636]
+
+Contributors:
+  Sarvjeet, Giovanni Campagna, Adel Gadllah, Clément Guérin, Devyani Kota,
+  Ting-Wei Lan, Rui Matos, Shivam Mishra, Florian Müllner, Owen W. Taylor
+
+Translations:
+  Khaled Hosny [ar], Dušan Kazik [sk], Yuri Myasoedov [ru], Stas Solovey [ru],
+  Hannie Dumoleyn [nl], Rūdolfs Mazurs [lv]
+
+3.16.0
+======
+* Revert erroneous login dialog changes [Ray; #740142]
+* Improve accessibility of legacy tray [Florian; #746487]
+* Fix legacy status icons leaking into other monitors [Florian; #745824]
+
+Contributors:
+  Florian Müllner, Ray Strode
+
+Translations:
+  Daniel Martinez [an], Sebastian Rasmussen [sv], Fran Dieguez [gl],
+  Andika Triwidada [id], Jordi Mas [ca], Kjartan Maraas [nb],
+  Inaki Larranaga Murgoitio [eu], Muhammet Kara [tr], Khaled Hosny [ar],
+  Bernd Homuth [de], Jiro Matsuzawa [ja]
+
+3.15.92
+=======
+* gdm: Fix user list accessibility [Florian; #729603]
+* Handle multiline questions in mount operations [Ross; #745713]
+* Improve classic theme [Jakub; #745686, #745687]
+* Fix ordering of calendar events [Florian; #745988]
+* Pick first input source for new windows when per-window [Rui; #746037]
+* networkAgent: Show a notification for non-user-initiated password requests
+  [Giovanni; #660293]
+* Fix dismissing calendar events [Florian; #744927]
+* Add legacy tray to ctrl-alt-tab popup [Florian; #746022]
+* Manage on-screen-keyboard visibility in gnome-shell [Carlos; #745977]
+* Add pointer barriers to legacy tray [Cosimo; #746026]
+* Use fallback when app icon cannot be resolved [Cosimo; #746219]
+* Fix handling of removed smartcard at startup [Ray; #740143]
+* gdm: Don't pick a random session for the user [Jasper; #740142]
+* Make menu selection behavior consistent with GTK [Florian; #745246]
+* gdm: Fix empty user list on user switching [Ray; #719418]
+* Misc bug fixes [Florian, Giovanni, Clément, Rui; #745666, #746019, #745861,
+  #746027, #746223, #737502, #746343, #746288]
+
+Contributors:
+  Giovanni Campagna, Cosimo Cecchi, Piotr Drąg, Adel Gadllah, Carlos Garnacho,
+  Clément Guérin, Ross Lagerwall, Rui Matos, Florian Müllner, Jakub Steiner,
+  Jasper St. Pierre, Ray Strode
+
+Translations:
+  Piotr Drąg [pl], Changwoo Ryu [ko], Milo Casagrande [it],
+  Baurzhan Muftakhidinov [kk], Мирослав Николић [sr, sr@latin], Balázs Úr [hu],
+  IWAI, Masaharu [ja], Daniel Korostil [uk], Aurimas Černius [lt],
+  Matej Urbančič [sl], Daniel Mustieles [es], Kjartan Maraas [nb],
+  Victor Ibragimov [tg], Claude Paroz [fr], Jordi Mas [ca], Bernd Homuth [de],
+  Muhammet Kara [tr], Frédéric Péters [fr], Jiri Grönroos [fi],
+  Alexander Shopov [bg], Stas Solovey [ru], Trần Ngọc Quân [vi],
+  Samir Ribic [bs], Dušan Kazik [sk], Enrico Nicoletto [pt_BR],
+  Marek Černocký [cs], A S Alam [pa], Ask Hjorth Larsen [da],
+  Tom Tryfonidis [el], Alexandre Franke [fr], Yosef Or Boczko [he],
+  Chao-Hsiung Liao [zh_TW]
+
+3.15.91
+=======
+* Don't disable all shortcuts while non-panel menus are open [Florian; #745039]
+* Do not wake up the screen for disabled notifications [Florian; #744114]
+* Add unminimize animation [Florian; #702662]
+* Change default shortcut for viewing notifications [Florian; #687986]
+* Add shortcut to dismiss notifications from list [Florian; #745279]
+* Use Polari instead of Empathy for IRC conversations [Giovanni; #745431]
+* Add a hideable bottom tray for legacy status icons [Florian; #745162]
+* Improve accessibility of calendar/message list [Florian; #706903, #745393]
+* Fix window thumbnail scaling in overview [Sebastian; #744883]
+* Stop handling non-chat notifications for Empathy [Giovanni; #745503]
+* Fix mouse interaction with ibus candidate window [Rui; #745167, #745245]
+* Misc bug fixes and cleanups [Giovanni, Florian, Miguel, Cosimo, Jakub,
+  Michele, Raul, Matthias, Rui; #677412, #744880, #744900, #744894, #744907,
+  #745061, #741111, #744912, #745175, #745246, #744959, #744575, #745570,
+  #652742, #659187, #745412, #745521, #745521, #741665, #745574, #745627,
+  #745494, #745111, #745132, #745110]
+
+Contributors:
+  Michele, Giovanni Campagna, Cosimo Cecchi, Matthias Clasen,
+  Raul Gutierrez Segales, Sebastian Keller, David Liang, Rui Matos,
+  Florian Müllner, Yosef Or Boczko, Jakub Steiner, Jasper St. Pierre,
+  Rico Tzschichholz, Miguel Vaello Martínez
+
+Translations:
+  Dušan Kazik [sk], Chao-Hsiung Liao [zh_TW], Muhammet Kara [tr],
+  Balázs Úr [hu], Daniel Mustieles [es], Frédéric Péters [fr],
+  Rafael Ferreira [pt_BR], Aurimas Černius [lt], Milo Casagrande [it],
+  Yosef Or Boczko [he], Stas Solovey [ru], Baurzhan Muftakhidinov [kk],
+  Daniel Korostil [uk], Fran Dieguez [gl], Kjartan Maraas [nb],
+  Tom Tryfonidis [el], Cheng-Chia Tseng [zh_TW], Friedel Wolff [af],
+  Alexandre Franke [fr], Efstathios Iosifidis [el], Aron Xu [zh_CN],
+  Marek Černocký [cs], Enrico Nicoletto [pt_BR]
+
+3.15.90
+=======
+* gdm: Fix reactivity of first user in user list [Ray; #743370]
+* Prevent DND to dash when favorites are locked down [David; #741325]
+* Prevent DND in app picker when favorites are locked down [Murray; #741325]
+* Implement Display panel's OSD monitor labels in the shell [Rui; #743744]
+* Remove GSystem dependency [Colin; #744457]
+* Do not duplicate "New Window" action in dash [Florian; #744446]
+* Fix 'draw-cursor' option of screen recorder [Alexander; #744599]
+* Fix screencast timestamps [Sebastian; #744642]
+* Allow keybindings for switching to VT8-VT12 [Ray; #744800]
+* Implement notification redesign [Florian; #744498, #744815, #744817, #744850]
+* Fix struts computation of chrome on non-primary monitors [Sylvain; #744183]
+* Visual refresh based on GTK+ theme redesign [Jakub, Carlos; #737785, #744680]
+* Misc. bug fixes and cleanups [Ray, Bastien, Cosimo, Rui, Florian; #743371,
+  #736182, #744013, #743993, #744665]
+
+Contributors:
+  Cosimo Cecchi, Murray Cumming, Sebastian Dröge, David King,
+  Alexander Larsson, Rui Matos, Florian Müllner, Bastien Nocera,
+  Sylvain Pasche, Carlos Soriano, Jakub Steiner, Jasper St. Pierre, Ray Strode,
+  Colin Walters
+
+Translations:
+  Daniel Martinez [an], Sveinn í Felli [is], GNOME Translation Robot [de],
+  Yosef Or Boczko [he], Kristjan SCHMIDT [eo], Dušan Kazik [sk],
+  Andika Triwidada [id], Marek Černocký [cs], Muhammet Kara [tr],
+  Matej Urbančič [sl], Milo Casagrande [it], Anders Jonsson [sv]
+
+3.15.4
+======
+* Add mode parameter to AcceleratorActivated signal [Florian; #711682]
+* Fix PID based window/app association [Sebastian; #736527]
+* Fix current day highlight on day change [Sebastian; #742492]
+* Switch to vp9 for screencast recordings [Adel; #742744]
+* Disable IBus input sources on password entries [Takao; #730628]
+* Make slider scrolling smoother [Adel; #742648]
+* Allow move-up shortcut to move window above top workspace [Florian; #665764]
+* Misc. bug fixes [Adel, Rui; #742748, #742824, #741114]
+
+Contributors:
+  Cosimo Cecchi, Takao Fujiwara, Adel Gadllah, Sebastian Keller, Rui Matos,
+  Florian Müllner, Jasper St. Pierre
+
+Translations:
+  Andika Triwidada [id], Matej Urbančič [sl], Saibal Ray [bn_IN],
+  Inaki Larranaga Murgoitio [eu], Stas Solovey [ru], Kjartan Maraas [nb],
+  Balázs Úr [hu], Marek Černocký [cs], Rafael Ferreira [pt_BR],
+  Bernd Homuth [de], Daniel Mustieles [es], Fabio Tomat [fur]
+
 3.15.3
 ======
 * Add support for high-contrast themes [Florian; #740447]
