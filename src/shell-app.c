@@ -828,10 +828,13 @@ shell_app_sync_running_state (ShellApp *app)
 {
   g_return_if_fail (app->running_state != NULL);
 
-  if (app->running_state->interesting_windows == 0)
-    shell_app_state_transition (app, SHELL_APP_STATE_STOPPED);
-  else if (app->state != SHELL_APP_STATE_STARTING)
-    shell_app_state_transition (app, SHELL_APP_STATE_RUNNING);
+  if (app->state != SHELL_APP_STATE_STARTING)
+    {
+      if (app->running_state->interesting_windows == 0)
+        shell_app_state_transition (app, SHELL_APP_STATE_STOPPED);
+      else
+        shell_app_state_transition (app, SHELL_APP_STATE_RUNNING);
+    }
 }
 
 
@@ -1000,10 +1003,16 @@ _shell_app_remove_window (ShellApp   *app,
 
   if (!meta_window_is_skip_taskbar (window))
     app->running_state->interesting_windows--;
-  shell_app_sync_running_state (app);
 
-  if (app->running_state && app->running_state->windows == NULL)
-    g_clear_pointer (&app->running_state, unref_running_state);
+  if (app->running_state->windows == NULL)
+    {
+      g_clear_pointer (&app->running_state, unref_running_state);
+      shell_app_state_transition (app, SHELL_APP_STATE_STOPPED);
+    }
+  else
+    {
+      shell_app_sync_running_state (app);
+    }
 
   g_signal_emit (app, shell_app_signals[WINDOWS_CHANGED], 0);
 }
