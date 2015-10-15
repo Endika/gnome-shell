@@ -349,7 +349,7 @@ static void
 st_widget_finalize (GObject *gobject)
 {
   StWidgetPrivate *priv = ST_WIDGET (gobject)->priv;
-  int i;
+  guint i;
 
   g_free (priv->style_class);
   g_free (priv->pseudo_class);
@@ -623,9 +623,9 @@ st_widget_get_theme_node (StWidget *widget)
        * requiring separate style sheets.
        */
       if (clutter_actor_get_text_direction (CLUTTER_ACTOR (widget)) == CLUTTER_TEXT_DIRECTION_RTL)
-        direction_pseudo_class = "rtl";
+        direction_pseudo_class = (char *)"rtl";
       else
-        direction_pseudo_class = "ltr";
+        direction_pseudo_class = (char *)"ltr";
 
       if (priv->pseudo_class)
         pseudo_class = g_strconcat(priv->pseudo_class, " ",
@@ -1495,7 +1495,7 @@ static void
 st_widget_init (StWidget *actor)
 {
   StWidgetPrivate *priv;
-  int i;
+  guint i;
 
   actor->priv = priv = ST_WIDGET_GET_PRIVATE (actor);
   priv->transition_animation = NULL;
@@ -1849,6 +1849,8 @@ filter_by_position (GList            *children,
             continue;
           break;
 
+        case GTK_DIR_TAB_BACKWARD:
+        case GTK_DIR_TAB_FORWARD:
         default:
           g_return_val_if_reached (NULL);
         }
@@ -2014,6 +2016,8 @@ st_widget_real_navigate_focus (StWidget         *widget,
             case GTK_DIR_RIGHT:
               sort_box.x2 = sort_box.x1;
               break;
+            case GTK_DIR_TAB_FORWARD:
+            case GTK_DIR_TAB_BACKWARD:
             default:
               g_warn_if_reached ();
             }
@@ -2210,7 +2214,7 @@ st_set_slow_down_factor (gfloat factor)
  * Returns: the global factor applied to all animation durations
  */
 gfloat
-st_get_slow_down_factor ()
+st_get_slow_down_factor (void)
 {
   return st_slow_down_factor;
 }
@@ -2430,8 +2434,6 @@ st_widget_remove_accessible_state (StWidget    *widget,
 
 /* GObject */
 
-static void st_widget_accessible_class_init (StWidgetAccessibleClass *klass);
-static void st_widget_accessible_init       (StWidgetAccessible *widget);
 static void st_widget_accessible_dispose    (GObject *gobject);
 
 /* AtkObject */

@@ -182,7 +182,7 @@ shell_app_system_finalize (GObject *object)
  * Return Value: (transfer none): The global #ShellAppSystem singleton
  */
 ShellAppSystem *
-shell_app_system_get_default ()
+shell_app_system_get_default (void)
 {
   static ShellAppSystem *instance = NULL;
 
@@ -347,6 +347,9 @@ _shell_app_system_notify_app_state_changed (ShellAppSystem *self,
       break;
     case SHELL_APP_STATE_STOPPED:
       g_hash_table_remove (self->priv->running_apps, app);
+      break;
+    default:
+      g_warn_if_reached();
       break;
     }
   g_signal_emit (self, signals[APP_STATE_CHANGED], 0, app);

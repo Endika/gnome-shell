@@ -335,6 +335,9 @@ st_theme_node_get_corner_border_widths (StThemeNode *node,
         if (border_width_2)
             *border_width_2 = node->border_width[ST_SIDE_LEFT];
         break;
+      default:
+        g_assert_not_reached();
+        break;
     }
 }
 
@@ -380,6 +383,9 @@ st_theme_node_lookup_corner (StThemeNode    *node,
       case ST_CORNER_BOTTOMLEFT:
         over (&node->border_color[ST_SIDE_BOTTOM], &corner.color, &corner.border_color_1);
         over (&node->border_color[ST_SIDE_LEFT], &corner.color, &corner.border_color_2);
+        break;
+      default:
+        g_assert_not_reached();
         break;
     }
 
@@ -432,6 +438,9 @@ get_background_scale (StThemeNode *node,
           }
         else if (node->background_size_h > -1)
           *scale_w = node->background_size_h / background_image_height;
+        break;
+      default:
+        g_assert_not_reached();
         break;
     }
   if (*scale_h < 0.0)
@@ -960,7 +969,7 @@ st_theme_node_prerender_background (StThemeNode *node,
   gboolean draw_background_image_shadow = FALSE;
   gboolean has_visible_outline;
   ClutterColor border_color;
-  int border_width[4];
+  guint border_width[4];
   guint rowstride;
   guchar *data;
   ClutterActorBox actor_box;
@@ -1298,15 +1307,15 @@ st_theme_node_load_border_image (StThemeNode *node)
   if (node->border_slices_texture == COGL_INVALID_HANDLE)
     {
       StBorderImage *border_image;
+      GFile *file;
+      int scale_factor;
 
       border_image = st_theme_node_get_border_image (node);
       if (border_image == NULL)
         goto out;
 
-      GFile *file;
       file = st_border_image_get_file (border_image);
 
-      int scale_factor;
       g_object_get (node->context, "scale-factor", &scale_factor, NULL);
 
       node->border_slices_texture = st_texture_cache_load_file_to_cogl_texture (st_texture_cache_get_default (),
@@ -1350,12 +1359,12 @@ st_theme_node_load_background_image (StThemeNode *node)
     {
       GFile *background_image;
       StShadow *background_image_shadow_spec;
+      int scale_factor;
 
       background_image = st_theme_node_get_background_image (node);
       if (background_image == NULL)
         goto out;
 
-      int scale_factor;
       g_object_get (node->context, "scale-factor", &scale_factor, NULL);
 
       background_image_shadow_spec = st_theme_node_get_background_image_shadow (node);
@@ -1588,10 +1597,10 @@ st_theme_node_paint_borders (StThemeNodePaintState *state,
 {
   StThemeNode *node = state->node;
   float width, height;
-  int border_width[4];
+  guint border_width[4];
   guint border_radius[4];
-  int max_border_radius = 0;
-  int max_width_radius[4];
+  guint max_border_radius = 0;
+  guint max_width_radius[4];
   int corner_id, side_id;
   ClutterColor border_color;
   guint8 alpha;
@@ -1720,6 +1729,9 @@ st_theme_node_paint_borders (StThemeNodePaintState *state,
                                                     max_width_radius[ST_CORNER_BOTTOMLEFT], height,
                                                     0, 0.5, 0.5, 1);
                 break;
+              default:
+                g_assert_not_reached();
+                break;
             }
         }
     }
@@ -1813,6 +1825,9 @@ st_theme_node_paint_borders (StThemeNodePaintState *state,
                     verts[6] = max_border_radius;
                     verts[7] = height - border_width[ST_SIDE_BOTTOM];
                   }
+                break;
+              default:
+                g_assert_not_reached();
                 break;
             }
           cogl_rectangles (verts, n_rects);

@@ -30,10 +30,8 @@
 #include "st-theme-context.h"
 #include "st-theme-node-private.h"
 
-static void st_theme_node_init               (StThemeNode          *node);
-static void st_theme_node_class_init         (StThemeNodeClass     *klass);
 static void st_theme_node_dispose           (GObject                 *object);
-static void st_theme_node_finalize           (GObject                 *object);
+static void st_theme_node_finalize          (GObject                 *object);
 
 static const ClutterColor BLACK_COLOR = { 0, 0, 0, 0xff };
 static const ClutterColor TRANSPARENT_COLOR = { 0, 0, 0, 0 };
@@ -596,6 +594,9 @@ get_color_from_rgba_term (CRTerm       *term,
         case 3:
           a = value;
           break;
+        default:
+          g_assert_not_reached();
+          break;
         }
 
       arg = arg->next;
@@ -840,26 +841,21 @@ st_theme_node_lookup_time (StThemeNode *node,
       if (strcmp (decl->property->stryng->str, property_name) == 0)
         {
           CRTerm *term = decl->value;
+          int factor = 1;
 
           if (term->type != TERM_NUMBER)
             continue;
 
-          switch (term->content.num->type)
-            {
-            case NUM_TIME_S:
-              *value = 1000 * term->content.num->val;
-              result = TRUE;
-              break;
-            case NUM_TIME_MS:
-              *value = term->content.num->val;
-              result = TRUE;
-              break;
-            default:
-              ;
-            }
+          if (term->content.num->type != NUM_TIME_S ||
+              term->content.num->type != NUM_TIME_MS)
+            continue;
 
-          if (result)
-            break;
+          if (term->content.num->type == NUM_TIME_S)
+            factor = 1000;
+
+          *value = factor * term->content.num->val;
+          result = TRUE;
+          break;
         }
     }
 
@@ -1109,6 +1105,7 @@ get_length_from_term (StThemeNode *node,
     case NUM_FREQ_KHZ:
     case NUM_UNKNOWN_TYPE:
     case NB_NUM_TYPE:
+    default:
       g_warning ("Ignoring invalid type of number of length property");
       return VALUE_NOT_FOUND;
     }
@@ -3023,7 +3020,7 @@ st_theme_node_get_border_image (StThemeNode *node)
           CRStyleSheet *base_stylesheet;
           int borders[4];
           int n_borders = 0;
-          int i;
+          int j;
 
           const char *url;
           int border_top;
@@ -3053,7 +3050,7 @@ st_theme_node_get_border_image (StThemeNode *node)
           /* Followed by 0 to 4 numbers or percentages. *Not lengths*. The interpretation
            * of a number is supposed to be pixels if the image is pixel based, otherwise CSS pixels.
            */
-          for (i = 0; i < 4; i++)
+          for (j = 0; j < 4; j++)
             {
               if (term == NULL)
                 break;
@@ -3256,6 +3253,9 @@ parse_shadow_property (StThemeNode       *node,
                       g_warning ("Negative spread values are "
                                  "not allowed");
                   *spread = value;
+                  break;
+                default:
+                  g_warning ("Ignoring excess values in shadow definition");
                   break;
                 }
               continue;
@@ -3632,6 +3632,9 @@ st_theme_node_get_icon_colors (StThemeNode *node)
               break;
             case SUCCESS:
               node->icon_colors->success = color;
+              break;
+            default:
+              g_assert_not_reached();
               break;
             }
         }

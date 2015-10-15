@@ -51,11 +51,11 @@ enum {
 static int _shell_debug;
 
 static void
-shell_dbus_acquire_name (GDBusProxy *bus,
-                         guint32     request_name_flags,
-                         guint32    *request_name_result,
-                         gchar      *name,
-                         gboolean    fatal)
+shell_dbus_acquire_name (GDBusProxy  *bus,
+                         guint32      request_name_flags,
+                         guint32     *request_name_result,
+                         const gchar *name,
+                         gboolean     fatal)
 {
   GError *error = NULL;
   GVariant *request_name_variant;
@@ -69,24 +69,26 @@ shell_dbus_acquire_name (GDBusProxy *bus,
                                                        &error)))
     {
       g_printerr ("failed to acquire %s: %s\n", name, error->message);
+      g_clear_error (&error);
       if (!fatal)
         return;
       exit (1);
     }
   g_variant_get (request_name_variant, "(u)", request_name_result);
+  g_variant_unref (request_name_variant);
 }
 
 static void
-shell_dbus_acquire_names (GDBusProxy *bus,
-                          guint32     request_name_flags,
-                          gchar      *name,
-                          gboolean    fatal, ...) G_GNUC_NULL_TERMINATED;
+shell_dbus_acquire_names (GDBusProxy  *bus,
+                          guint32      request_name_flags,
+                          const gchar *name,
+                          gboolean     fatal, ...) G_GNUC_NULL_TERMINATED;
 
 static void
-shell_dbus_acquire_names (GDBusProxy *bus,
-                          guint32     request_name_flags,
-                          gchar      *name,
-                          gboolean    fatal, ...)
+shell_dbus_acquire_names (GDBusProxy  *bus,
+                          guint32      request_name_flags,
+                          const gchar *name,
+                          gboolean     fatal, ...)
 {
   va_list al;
   guint32 request_name_result;
@@ -129,6 +131,12 @@ shell_dbus_init (gboolean replace)
                                "org.freedesktop.DBus",
                                NULL, /* cancellable */
                                &error);
+
+  if (!bus)
+    {
+      g_printerr ("Failed to get a session bus proxy: %s", error->message);
+      exit (1);
+    }
 
   request_name_flags = G_BUS_NAME_OWNER_FLAGS_ALLOW_REPLACEMENT;
   if (replace)
@@ -454,7 +462,7 @@ main (int argc, char **argv)
 
   /* Initialize the global object */
   if (session_mode == NULL)
-    session_mode = is_gdm_mode ? "gdm" : "user";
+    session_mode = is_gdm_mode ? (char *)"gdm" : (char *)"user";
 
   _shell_global_init ("session-mode", session_mode, NULL);
 

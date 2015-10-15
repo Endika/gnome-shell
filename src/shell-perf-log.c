@@ -626,7 +626,7 @@ shell_perf_log_collect_statistics (ShellPerfLog *perf_log)
 {
   gint64 event_time = get_time ();
   gint64 collection_time;
-  int i;
+  guint i;
 
   if (!perf_log->enabled)
     return;
@@ -671,6 +671,9 @@ shell_perf_log_collect_statistics (ShellPerfLog *perf_log)
               statistic->last_value.x = statistic->current_value.x;
               statistic->recorded = TRUE;
             }
+          break;
+        default:
+          g_warning ("Unsupported signature in event");
           break;
         }
     }
@@ -819,7 +822,7 @@ shell_perf_log_dump_events (ShellPerfLog   *perf_log,
                             GError        **error)
 {
   GString *output;
-  int i;
+  guint i;
 
   output = g_string_new (NULL);
   g_string_append (output, "[ ");

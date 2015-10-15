@@ -211,7 +211,7 @@ st_button_button_release (ClutterActor       *actor,
     {
       gboolean is_click;
 
-      is_click = button->priv->grabbed && st_widget_get_hover (ST_WIDGET (button));
+      is_click = button->priv->grabbed && clutter_actor_contains (actor, event->source);
       st_button_release (button, device, mask, is_click ? event->button : 0, NULL);
 
       button->priv->grabbed &= ~mask;
@@ -800,9 +800,6 @@ struct _StButtonAccessibleClass
 {
   StWidgetAccessibleClass parent_class;
 };
-
-static void st_button_accessible_class_init (StButtonAccessibleClass *klass);
-static void st_button_accessible_init       (StButtonAccessible *button);
 
 /* AtkObject */
 static void          st_button_accessible_initialize (AtkObject *obj,
