@@ -37,6 +37,15 @@ enum {
 
 static guint signals[LAST_SIGNAL] = { 0 };
 
+typedef struct _ShellAppSystemPrivate ShellAppSystemPrivate;
+
+struct _ShellAppSystem
+{
+  GObject parent;
+
+  ShellAppSystemPrivate *priv;
+};
+
 struct _ShellAppSystemPrivate {
   GHashTable *running_apps;
   GHashTable *id_to_app;
@@ -45,7 +54,7 @@ struct _ShellAppSystemPrivate {
 
 static void shell_app_system_finalize (GObject *object);
 
-G_DEFINE_TYPE(ShellAppSystem, shell_app_system, G_TYPE_OBJECT);
+G_DEFINE_TYPE_WITH_PRIVATE (ShellAppSystem, shell_app_system, G_TYPE_OBJECT);
 
 static void shell_app_system_class_init(ShellAppSystemClass *klass)
 {
@@ -64,11 +73,9 @@ static void shell_app_system_class_init(ShellAppSystemClass *klass)
     g_signal_new ("installed-changed",
 		  SHELL_TYPE_APP_SYSTEM,
 		  G_SIGNAL_RUN_LAST,
-		  G_STRUCT_OFFSET (ShellAppSystemClass, installed_changed),
-          NULL, NULL, NULL,
+                  0,
+                  NULL, NULL, NULL,
 		  G_TYPE_NONE, 0);
-
-  g_type_class_add_private (gobject_class, sizeof (ShellAppSystemPrivate));
 }
 
 static void
@@ -147,9 +154,7 @@ shell_app_system_init (ShellAppSystem *self)
   ShellAppSystemPrivate *priv;
   GAppInfoMonitor *monitor;
 
-  self->priv = priv = G_TYPE_INSTANCE_GET_PRIVATE (self,
-                                                   SHELL_TYPE_APP_SYSTEM,
-                                                   ShellAppSystemPrivate);
+  self->priv = priv = shell_app_system_get_instance_private (self);
 
   priv->running_apps = g_hash_table_new_full (NULL, NULL, (GDestroyNotify) g_object_unref, NULL);
   priv->id_to_app = g_hash_table_new_full (g_str_hash, g_str_equal,

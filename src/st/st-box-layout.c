@@ -59,15 +59,6 @@
 static void st_box_container_iface_init (ClutterContainerIface *iface);
 static void st_box_scrollable_interface_init (StScrollableInterface *iface);
 
-G_DEFINE_TYPE_WITH_CODE (StBoxLayout, st_box_layout, ST_TYPE_WIDGET,
-                         G_IMPLEMENT_INTERFACE (CLUTTER_TYPE_CONTAINER,
-                                                st_box_container_iface_init)
-                         G_IMPLEMENT_INTERFACE (ST_TYPE_SCROLLABLE,
-                                                st_box_scrollable_interface_init));
-
-#define BOX_LAYOUT_PRIVATE(o) \
-  (G_TYPE_INSTANCE_GET_PRIVATE ((o), ST_TYPE_BOX_LAYOUT, StBoxLayoutPrivate))
-
 enum {
   PROP_0,
 
@@ -83,6 +74,13 @@ struct _StBoxLayoutPrivate
   StAdjustment *hadjustment;
   StAdjustment *vadjustment;
 };
+
+G_DEFINE_TYPE_WITH_CODE (StBoxLayout, st_box_layout, ST_TYPE_WIDGET,
+                         G_ADD_PRIVATE (StBoxLayout)
+                         G_IMPLEMENT_INTERFACE (CLUTTER_TYPE_CONTAINER,
+                                                st_box_container_iface_init)
+                         G_IMPLEMENT_INTERFACE (ST_TYPE_SCROLLABLE,
+                                                st_box_scrollable_interface_init));
 
 /*
  * StScrollable Interface Implementation
@@ -563,14 +561,30 @@ layout_notify (GObject    *object,
 }
 
 static void
+on_layout_manager_notify (GObject    *object,
+                          GParamSpec *pspec,
+                          gpointer    user_data)
+{
+  ClutterActor *actor = CLUTTER_ACTOR (object);
+  ClutterLayoutManager *layout = clutter_actor_get_layout_manager (actor);
+
+  g_warn_if_fail (CLUTTER_IS_BOX_LAYOUT (layout));
+
+  if (layout == NULL)
+    return;
+
+  g_signal_connect_swapped (layout, "layout-changed",
+                            G_CALLBACK (clutter_actor_queue_relayout), actor);
+  g_signal_connect (layout, "notify", G_CALLBACK (layout_notify), object);
+}
+
+static void
 st_box_layout_class_init (StBoxLayoutClass *klass)
 {
   GObjectClass *object_class = G_OBJECT_CLASS (klass);
   ClutterActorClass *actor_class = CLUTTER_ACTOR_CLASS (klass);
   StWidgetClass *widget_class = ST_WIDGET_CLASS (klass);
   GParamSpec *pspec;
-
-  g_type_class_add_private (klass, sizeof (StBoxLayoutPrivate));
 
   object_class->get_property = st_box_layout_get_property;
   object_class->set_property = st_box_layout_set_property;
@@ -614,14 +628,11 @@ st_box_layout_class_init (StBoxLayoutClass *klass)
 static void
 st_box_layout_init (StBoxLayout *self)
 {
-  ClutterLayoutManager *layout;
+  self->priv = st_box_layout_get_instance_private (self);
 
-  self->priv = BOX_LAYOUT_PRIVATE (self);
-  layout = clutter_box_layout_new ();
-  g_signal_connect_swapped (layout, "layout-changed",
-                            G_CALLBACK (clutter_actor_queue_relayout), self);
-  g_signal_connect (layout, "notify", G_CALLBACK (layout_notify), self);
-  clutter_actor_set_layout_manager (CLUTTER_ACTOR (self), layout);
+  g_signal_connect (self, "notify::layout-manager",
+                    G_CALLBACK (on_layout_manager_notify), NULL);
+  clutter_actor_set_layout_manager (CLUTTER_ACTOR (self), clutter_box_layout_new ());
 }
 
 /**

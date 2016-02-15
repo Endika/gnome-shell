@@ -107,18 +107,14 @@ struct _StThemeNode {
   int box_shadow_min_width;
   int box_shadow_min_height;
 
-  CoglHandle border_slices_texture;
-  CoglHandle border_slices_material;
-  CoglHandle background_texture;
-  CoglHandle background_material;
-  CoglHandle background_shadow_material;
+  CoglPipeline *border_slices_texture;
+  CoglPipeline *border_slices_pipeline;
+  CoglPipeline *background_texture;
+  CoglPipeline *background_pipeline;
+  CoglPipeline *background_shadow_pipeline;
+  CoglPipeline *color_pipeline;
 
   StThemeNodePaintState cached_state;
-};
-
-struct _StThemeNodeClass {
-  GObjectClass parent_class;
-
 };
 
 void _st_theme_node_ensure_background (StThemeNode *node);

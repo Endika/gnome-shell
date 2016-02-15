@@ -15,6 +15,15 @@
 #include "shell-embedded-window.h"
 #include "shell-global.h"
 
+typedef struct _ShellTrayManagerPrivate ShellTrayManagerPrivate;
+
+struct _ShellTrayManager
+{
+  GObject parent_instance;
+
+  ShellTrayManagerPrivate *priv;
+};
+
 struct _ShellTrayManagerPrivate {
   NaTrayManager *na_manager;
   ClutterColor bg_color;
@@ -43,7 +52,7 @@ enum
   LAST_SIGNAL
 };
 
-G_DEFINE_TYPE (ShellTrayManager, shell_tray_manager, G_TYPE_OBJECT);
+G_DEFINE_TYPE_WITH_PRIVATE (ShellTrayManager, shell_tray_manager, G_TYPE_OBJECT);
 
 static guint shell_tray_manager_signals [LAST_SIGNAL] = { 0 };
 
@@ -114,8 +123,8 @@ shell_tray_manager_get_property(GObject         *object,
 static void
 shell_tray_manager_init (ShellTrayManager *manager)
 {
-  manager->priv = G_TYPE_INSTANCE_GET_PRIVATE (manager, SHELL_TYPE_TRAY_MANAGER,
-                                               ShellTrayManagerPrivate);
+  manager->priv = shell_tray_manager_get_instance_private (manager);
+
   manager->priv->na_manager = na_tray_manager_new ();
 
   manager->priv->icons = g_hash_table_new_full (NULL, NULL,
@@ -144,8 +153,6 @@ shell_tray_manager_class_init (ShellTrayManagerClass *klass)
 {
   GObjectClass *gobject_class = G_OBJECT_CLASS (klass);
 
-  g_type_class_add_private (klass, sizeof (ShellTrayManagerPrivate));
-
   gobject_class->finalize = shell_tray_manager_finalize;
   gobject_class->set_property = shell_tray_manager_set_property;
   gobject_class->get_property = shell_tray_manager_get_property;
@@ -154,7 +161,7 @@ shell_tray_manager_class_init (ShellTrayManagerClass *klass)
     g_signal_new ("tray-icon-added",
                   G_TYPE_FROM_CLASS (klass),
                   G_SIGNAL_RUN_LAST,
-                  G_STRUCT_OFFSET (ShellTrayManagerClass, tray_icon_added),
+                  0,
                   NULL, NULL, NULL,
                   G_TYPE_NONE, 1,
                   CLUTTER_TYPE_ACTOR);
@@ -162,7 +169,7 @@ shell_tray_manager_class_init (ShellTrayManagerClass *klass)
     g_signal_new ("tray-icon-removed",
                   G_TYPE_FROM_CLASS (klass),
                   G_SIGNAL_RUN_LAST,
-                  G_STRUCT_OFFSET (ShellTrayManagerClass, tray_icon_removed),
+                  0,
                   NULL, NULL, NULL,
                   G_TYPE_NONE, 1,
                   CLUTTER_TYPE_ACTOR);
@@ -193,27 +200,12 @@ shell_tray_manager_style_changed (StWidget *theme_widget,
   ShellTrayManager *manager = user_data;
   StThemeNode *theme_node;
   StIconColors *icon_colors;
-  GdkColor foreground, warning, error, success;
 
   theme_node = st_widget_get_theme_node (theme_widget);
   icon_colors = st_theme_node_get_icon_colors (theme_node);
-
-  foreground.red = icon_colors->foreground.red * 0x101;
-  foreground.green = icon_colors->foreground.green * 0x101;
-  foreground.blue = icon_colors->foreground.blue * 0x101;
-  warning.red = icon_colors->warning.red * 0x101;
-  warning.green = icon_colors->warning.green * 0x101;
-  warning.blue = icon_colors->warning.blue * 0x101;
-  error.red = icon_colors->error.red * 0x101;
-  error.green = icon_colors->error.green * 0x101;
-  error.blue = icon_colors->error.blue * 0x101;
-  success.red = icon_colors->success.red * 0x101;
-  success.green = icon_colors->success.green * 0x101;
-  success.blue = icon_colors->success.blue * 0x101;
-
   na_tray_manager_set_colors (manager->priv->na_manager,
-                              &foreground, &warning,
-                              &error, &success);
+                              &icon_colors->foreground, &icon_colors->warning,
+                              &icon_colors->error, &icon_colors->success);
 }
 
 void
@@ -286,14 +278,6 @@ na_tray_icon_added (NaTrayManager *na_manager, GtkWidget *socket,
   ShellTrayManager *manager = user_data;
   GtkWidget *win;
   ShellTrayManagerChild *child;
-
-  /* We don't need the NaTrayIcon to be composited on the window we
-   * put it in: the window is the same size as the tray icon
-   * and transparent. We can just use the default X handling of
-   * subwindows as mode of SOURCE (replace the parent with the
-   * child) and then composite the parent onto the stage.
-   */
-  na_tray_child_set_composited (NA_TRAY_CHILD (socket), FALSE);
 
   win = shell_embedded_window_new ();
   gtk_container_add (GTK_CONTAINER (win), socket);

@@ -33,7 +33,6 @@
  * the GPid array to JS).
  * See https://bugzilla.gnome.org/show_bug.cgi?id=645978
  */
-G_DEFINE_TYPE (ShellMountOperation, shell_mount_operation, G_TYPE_MOUNT_OPERATION);
 
 enum {
   SHOW_PROCESSES_2,
@@ -42,17 +41,27 @@ enum {
 
 static guint signals[NUM_SIGNALS] = { 0, };
 
+typedef struct _ShellMountOperationPrivate  ShellMountOperationPrivate;
+
+struct _ShellMountOperation
+{
+  GMountOperation parent_instance;
+
+  ShellMountOperationPrivate *priv;
+};
+
 struct _ShellMountOperationPrivate {
   GArray *pids;
   gchar **choices;
   gchar *message;
 };
 
+G_DEFINE_TYPE_WITH_PRIVATE (ShellMountOperation, shell_mount_operation, G_TYPE_MOUNT_OPERATION);
+
 static void
 shell_mount_operation_init (ShellMountOperation *self)
 {
-  self->priv = G_TYPE_INSTANCE_GET_PRIVATE (self, SHELL_TYPE_MOUNT_OPERATION,
-                                            ShellMountOperationPrivate);
+  self->priv = shell_mount_operation_get_instance_private (self);
 }
 
 static void
@@ -135,8 +144,6 @@ shell_mount_operation_class_init (ShellMountOperationClass *klass)
                   G_SIGNAL_RUN_LAST,
                   0, NULL, NULL, NULL,
                   G_TYPE_NONE, 0);
-
-  g_type_class_add_private (klass, sizeof (ShellMountOperationPrivate));
 }
 
 GMountOperation *

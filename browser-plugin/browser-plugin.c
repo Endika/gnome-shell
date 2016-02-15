@@ -33,19 +33,15 @@
 #include <json-glib/json-glib.h>
 
 #define ORIGIN "extensions.gnome.org"
-#define PLUGIN_NAME "Gnome Shell Integration"
-#define PLUGIN_DESCRIPTION "This plugin provides integration with Gnome Shell " \
+#define PLUGIN_NAME "GNOME Shell Integration"
+#define PLUGIN_DESCRIPTION "This plugin provides integration with GNOME Shell " \
       "for live extension enabling and disabling. " \
       "It can be used only by extensions.gnome.org"
-#define PLUGIN_MIME_STRING "application/x-gnome-shell-integration::Gnome Shell Integration Dummy Content-Type";
+#define PLUGIN_MIME_STRING "application/x-gnome-shell-integration::GNOME Shell Integration Dummy Content-Type";
 
 #define PLUGIN_API_VERSION 5
 
 #define EXTENSION_DISABLE_VERSION_CHECK_KEY "disable-extension-version-validation"
-
-typedef struct {
-  GDBusProxy *proxy;
-} PluginData;
 
 static NPNetscapeFuncs funcs;
 
@@ -145,121 +141,6 @@ check_origin_and_protocol (NPP instance)
   return ret;
 }
 
-/* =============== public entry points =================== */
-
-NPError
-NP_Initialize(NPNetscapeFuncs *pfuncs, NPPluginFuncs *plugin)
-{
-  /* global initialization routine, called once when plugin
-     is loaded */
-
-  g_debug ("plugin loaded");
-
-  memcpy (&funcs, pfuncs, sizeof (funcs));
-
-  plugin->size = sizeof(NPPluginFuncs);
-  plugin->newp = NPP_New;
-  plugin->destroy = NPP_Destroy;
-  plugin->getvalue = NPP_GetValue;
-  plugin->setwindow = NPP_SetWindow;
-
-  return NPERR_NO_ERROR;
-}
-
-NPError
-NP_Shutdown(void)
-{
-  return NPERR_NO_ERROR;
-}
-
-const char*
-NP_GetMIMEDescription(void)
-{
-  return PLUGIN_MIME_STRING;
-}
-
-NPError
-NP_GetValue(void         *instance,
-            NPPVariable   variable,
-            void         *value)
-{
-  switch (variable) {
-  case NPPVpluginNameString:
-    *(char**)value = PLUGIN_NAME;
-    break;
-  case NPPVpluginDescriptionString:
-    *(char**)value = PLUGIN_DESCRIPTION;
-    break;
-  default:
-    ;
-  }
-
-  return NPERR_NO_ERROR;
-}
-
-NPError
-NPP_New(NPMIMEType    mimetype,
-        NPP           instance,
-        uint16_t      mode,
-        int16_t       argc,
-        char        **argn,
-        char        **argv,
-        NPSavedData  *saved)
-{
-  /* instance initialization function */
-  PluginData *data;
-  GError *error = NULL;
-
-  g_debug ("plugin created");
-
-  if (!check_origin_and_protocol (instance))
-    return NPERR_GENERIC_ERROR;
-
-  data = g_slice_new (PluginData);
-  instance->pdata = data;
-
-  data->proxy = g_dbus_proxy_new_for_bus_sync (G_BUS_TYPE_SESSION,
-                                               G_DBUS_PROXY_FLAGS_NONE,
-                                               NULL, /* interface info */
-                                               "org.gnome.Shell",
-                                               "/org/gnome/Shell",
-                                               "org.gnome.Shell.Extensions",
-                                               NULL, /* GCancellable */
-                                               &error);
-  if (!data->proxy)
-    {
-      /* ignore error if the shell is not running, otherwise warn */
-      if (error->domain != G_DBUS_ERROR ||
-          error->code != G_DBUS_ERROR_NAME_HAS_NO_OWNER)
-        {
-          g_warning ("Failed to set up Shell proxy: %s", error->message);
-        }
-      g_clear_error (&error);
-      return NPERR_GENERIC_ERROR;
-    }
-
-  g_debug ("plugin created successfully");
-
-  return NPERR_NO_ERROR;
-}
-
-NPError
-NPP_Destroy(NPP           instance,
-	    NPSavedData **saved)
-{
-  /* instance finalization function */
-
-  PluginData *data = instance->pdata;
-
-  g_debug ("plugin destroyed");
-
-  g_object_unref (data->proxy);
-
-  g_slice_free (PluginData, data);
-
-  return NPERR_NO_ERROR;
-}
-
 /* =================== scripting interface =================== */
 
 typedef struct {
@@ -281,14 +162,6 @@ on_shell_signal (GDBusProxy *proxy,
                  gpointer    user_data)
 {
   PluginObject *obj = user_data;
-
-  /* FIXME: We have half a dozen bug reports in which this function crashes in
-   * WebKit due to a null NPObject. This should never happen, but since it is
-   * happening, let's turn the crash into a critical.
-   *
-   * https://bugzilla.gnome.org/show_bug.cgi?id=737932
-   */
-  g_return_if_fail (obj->instance);
 
   if (strcmp (signal_name, "ExtensionStatusChanged") == 0)
     {
@@ -320,12 +193,6 @@ on_shell_appeared (GDBusConnection *connection,
 {
   PluginObject *obj = (PluginObject*) user_data;
 
-  /* FIXME: Not sure if this is ever hit or not, but let's play it safe.
-   *
-   * https://bugzilla.gnome.org/show_bug.cgi?id=737932
-   */
-  g_return_if_fail (obj->instance);
-
   if (obj->restart_listener)
     {
       NPVariant result = { NPVariantType_Void };
@@ -344,45 +211,18 @@ static NPObject *
 plugin_object_allocate (NPP      instance,
                         NPClass *klass)
 {
-  PluginData *data = instance->pdata;
-  PluginObject *obj = g_slice_new0 (PluginObject);
+  PluginObject *obj = (PluginObject *) funcs.memalloc (sizeof (PluginObject));
 
+  memset (obj, 0, sizeof (PluginObject));
   obj->instance = instance;
-  obj->proxy = g_object_ref (data->proxy);
-  obj->settings = g_settings_new (SHELL_SCHEMA);
-  obj->signal_id = g_signal_connect (obj->proxy, "g-signal",
-                                     G_CALLBACK (on_shell_signal), obj);
 
-  obj->watch_name_id = g_bus_watch_name (G_BUS_TYPE_SESSION,
-                                         "org.gnome.Shell",
-                                         G_BUS_NAME_WATCHER_FLAGS_NONE,
-                                         on_shell_appeared,
-                                         NULL,
-                                         obj,
-                                         NULL);
-
-  g_debug ("plugin object created");
-
-  return (NPObject*)obj;
+  return (NPObject*) obj;
 }
 
 static void
 plugin_object_deallocate (NPObject *npobj)
 {
-  PluginObject *obj = (PluginObject*)npobj;
-
-  g_signal_handler_disconnect (obj->proxy, obj->signal_id);
-  g_object_unref (obj->proxy);
-
-  if (obj->listener)
-    funcs.releaseobject (obj->listener);
-
-  if (obj->watch_name_id)
-    g_bus_unwatch_name (obj->watch_name_id);
-
-  g_debug ("plugin object destroyed");
-
-  g_slice_free (PluginObject, obj);
+  funcs.memfree (npobj);
 }
 
 static inline gboolean
@@ -1033,6 +873,149 @@ init_methods_and_properties (void)
   onextension_changed_id = funcs.getstringidentifier ("onchange");
 }
 
+/* =============== public entry points =================== */
+
+NPError
+NP_Initialize(NPNetscapeFuncs *pfuncs, NPPluginFuncs *plugin)
+{
+  /* global initialization routine, called once when plugin
+     is loaded */
+
+  g_debug ("plugin loaded");
+
+  memcpy (&funcs, pfuncs, sizeof (funcs));
+
+  plugin->size = sizeof(NPPluginFuncs);
+  plugin->newp = NPP_New;
+  plugin->destroy = NPP_Destroy;
+  plugin->getvalue = NPP_GetValue;
+  plugin->setwindow = NPP_SetWindow;
+  plugin->event = NPP_HandleEvent;
+
+  return NPERR_NO_ERROR;
+}
+
+NPError
+NP_Shutdown(void)
+{
+  return NPERR_NO_ERROR;
+}
+
+const char*
+NP_GetMIMEDescription(void)
+{
+  return PLUGIN_MIME_STRING;
+}
+
+NPError
+NP_GetValue(void         *instance,
+            NPPVariable   variable,
+            void         *value)
+{
+  switch (variable) {
+  case NPPVpluginNameString:
+    *(char**)value = PLUGIN_NAME;
+    break;
+  case NPPVpluginDescriptionString:
+    *(char**)value = PLUGIN_DESCRIPTION;
+    break;
+  default:
+    ;
+  }
+
+  return NPERR_NO_ERROR;
+}
+
+NPError
+NPP_New(NPMIMEType    mimetype,
+        NPP           instance,
+        uint16_t      mode,
+        int16_t       argc,
+        char        **argn,
+        char        **argv,
+        NPSavedData  *saved)
+{
+  /* instance initialization function */
+  PluginObject *obj;
+  GError *error = NULL;
+
+  g_debug ("plugin created");
+
+  if (!check_origin_and_protocol (instance))
+    return NPERR_GENERIC_ERROR;
+
+  /* set windowless mode */
+  funcs.setvalue(instance, NPPVpluginWindowBool, NULL);
+
+  g_debug ("creating scriptable object");
+  init_methods_and_properties ();
+  obj = (PluginObject *) funcs.createobject (instance, &plugin_class);
+  instance->pdata = obj;
+
+  obj->proxy = g_dbus_proxy_new_for_bus_sync (G_BUS_TYPE_SESSION,
+                                              G_DBUS_PROXY_FLAGS_NONE,
+                                              NULL, /* interface info */
+                                              "org.gnome.Shell",
+                                              "/org/gnome/Shell",
+                                              "org.gnome.Shell.Extensions",
+                                              NULL, /* GCancellable */
+                                              &error);
+  if (!obj->proxy)
+    {
+      /* ignore error if the shell is not running, otherwise warn */
+      if (!g_error_matches (error, G_DBUS_ERROR, G_DBUS_ERROR_NAME_HAS_NO_OWNER))
+        {
+          g_warning ("Failed to set up Shell proxy: %s", error->message);
+        }
+      g_clear_error (&error);
+      return NPERR_GENERIC_ERROR;
+    }
+
+  obj->settings = g_settings_new (SHELL_SCHEMA);
+  obj->signal_id = g_signal_connect (obj->proxy, "g-signal",
+                                     G_CALLBACK (on_shell_signal), obj);
+  obj->watch_name_id = g_bus_watch_name (G_BUS_TYPE_SESSION,
+                                         "org.gnome.Shell",
+                                         G_BUS_NAME_WATCHER_FLAGS_NONE,
+                                         on_shell_appeared,
+                                         NULL,
+                                         obj,
+                                         NULL);
+
+  g_debug ("plugin created successfully");
+
+  return NPERR_NO_ERROR;
+}
+
+NPError
+NPP_Destroy(NPP           instance,
+	    NPSavedData **saved)
+{
+  /* instance finalization function */
+  PluginObject *obj = (PluginObject *) instance->pdata;
+
+  if (!obj)
+    return NPERR_INVALID_INSTANCE_ERROR;
+
+  g_debug ("plugin destroyed");
+
+  g_signal_handler_disconnect (obj->proxy, obj->signal_id);
+  g_object_unref (obj->proxy);
+
+  if (obj->listener)
+    funcs.releaseobject (obj->listener);
+
+  if (obj->restart_listener)
+    funcs.releaseobject (obj->restart_listener);
+
+  if (obj->watch_name_id)
+    g_bus_unwatch_name (obj->watch_name_id);
+
+  funcs.releaseobject((NPObject *)obj);
+
+  return NPERR_NO_ERROR;
+}
+
 NPError
 NPP_GetValue(NPP          instance,
 	     NPPVariable  variable,
@@ -1043,13 +1026,10 @@ NPP_GetValue(NPP          instance,
   switch (variable) {
   case NPPVpluginScriptableNPObject:
     g_debug ("creating scriptable object");
-    init_methods_and_properties ();
+    if (!instance->pdata)
+      return NPERR_INVALID_INSTANCE_ERROR;
 
-    *(NPObject**)value = funcs.createobject (instance, &plugin_class);
-    break;
-
-  case NPPVpluginNeedsXEmbed:
-    *(bool *)value = TRUE;
+    *(NPObject**)value = instance->pdata;
     break;
 
   default:
@@ -1066,4 +1046,12 @@ NPP_SetWindow(NPP          instance,
               NPWindow    *window)
 {
   return NPERR_NO_ERROR;
+}
+
+int16_t
+NPP_HandleEvent(NPP   instance,
+                void *event)
+{
+  /* Ignore the event */
+  return FALSE;
 }

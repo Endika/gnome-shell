@@ -1235,15 +1235,17 @@ const WindowManager = new Lang.Class({
     },
 
     _fullscreenWindow: function(shellwm, actor, oldFrameRect, oldBufferRect) {
-        actor.translation_x = oldFrameRect.x;
-        actor.translation_y = oldFrameRect.y;
+        let monitor = Main.layoutManager.monitors[actor.meta_window.get_monitor()];
+        actor.translation_x = oldFrameRect.x - monitor.x;
+        actor.translation_y = oldFrameRect.y - monitor.y;
         this._fullscreenAnimation(shellwm, actor, oldFrameRect);
     },
 
     _unfullscreenWindow: function(shellwm, actor, oldFrameRect, oldBufferRect) {
         let targetRect = actor.meta_window.get_frame_rect();
-        actor.translation_x = -targetRect.x;
-        actor.translation_y = -targetRect.y;
+        let monitor = Main.layoutManager.monitors[actor.meta_window.get_monitor()];
+        actor.translation_x = -(targetRect.x - monitor.x);
+        actor.translation_y = -(targetRect.y - monitor.y);
         this._fullscreenAnimation(shellwm, actor, oldFrameRect);
     },
 
@@ -1294,7 +1296,10 @@ const WindowManager = new Lang.Class({
                            transition: 'easeOutQuad',
                            onComplete: this._sizeChangeWindowDone,
                            onCompleteScope: this,
-                           onCompleteParams: [shellwm, actor]
+                           onCompleteParams: [shellwm, actor],
+                           onOverwrite: this._sizeChangeWindowOverwritten,
+                           onOverwriteScope: this,
+                           onOverwriteParams: [shellwm, actor]
                          });
 
         // Now unfreeze actor updates, to get it to the new size.
@@ -1311,6 +1316,16 @@ const WindowManager = new Lang.Class({
             actor.translation_x = 0;
             actor.translation_y = 0;
 
+            let actorClone = actor.__fullscreenClone;
+            if (actorClone) {
+                actorClone.destroy();
+                delete actor.__fullscreenClone;
+            }
+        }
+    },
+
+    _sizeChangeWindowOverwritten: function(shellwm, actor) {
+        if (this._removeEffect(this._resizing, actor)) {
             let actorClone = actor.__fullscreenClone;
             if (actorClone) {
                 actorClone.destroy();

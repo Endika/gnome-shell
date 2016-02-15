@@ -60,7 +60,7 @@ struct _ShellNetworkAgentPrivate {
   GHashTable *requests;
 };
 
-G_DEFINE_TYPE (ShellNetworkAgent, shell_network_agent, NM_TYPE_SECRET_AGENT)
+G_DEFINE_TYPE_WITH_PRIVATE (ShellNetworkAgent, shell_network_agent, NM_TYPE_SECRET_AGENT)
 
 static const SecretSchema network_agent_schema = {
     "org.freedesktop.NetworkManager.Connection",
@@ -114,8 +114,7 @@ shell_network_agent_init (ShellNetworkAgent *agent)
 {
   ShellNetworkAgentPrivate *priv;
 
-  priv = agent->priv = G_TYPE_INSTANCE_GET_PRIVATE (agent, SHELL_TYPE_NETWORK_AGENT, ShellNetworkAgentPrivate);
-
+  priv = agent->priv = shell_network_agent_get_instance_private (agent);
   priv->requests = g_hash_table_new_full (g_str_hash, g_str_equal,
 					  g_free, shell_agent_request_free);
 }
@@ -315,8 +314,6 @@ get_secrets_keyring_cb (GObject            *source,
 
               secrets_found = TRUE;
 
-              g_hash_table_unref (attributes);
-              secret_value_unref (secret);
               break;
             }
         }
@@ -366,8 +363,6 @@ shell_network_agent_get_secrets (NMSecretAgent                 *agent,
 {
   ShellNetworkAgent *self = SHELL_NETWORK_AGENT (agent);
   ShellAgentRequest *request;
-  NMSettingConnection *setting_connection;
-  const char *connection_type;
   GHashTable *attributes;
   char *request_id;
 
@@ -381,9 +376,6 @@ shell_network_agent_get_secrets (NMSecretAgent                 *agent,
       shell_agent_request_cancel (request);
     }
 
-  setting_connection = nm_connection_get_setting_connection (connection);
-  connection_type = nm_setting_connection_get_connection_type (setting_connection);
-
   request = g_slice_new (ShellAgentRequest);
   request->self = g_object_ref (self);
   request->cancellable = g_cancellable_new ();
@@ -393,7 +385,7 @@ shell_network_agent_get_secrets (NMSecretAgent                 *agent,
   request->flags = flags;
   request->callback = callback;
   request->callback_data = callback_data;
-  request->is_vpn = !strcmp(connection_type, NM_SETTING_VPN_SETTING_NAME);
+  request->is_vpn = !strcmp(setting_name, NM_SETTING_VPN_SETTING_NAME);
   request->entries = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, gvalue_destroy_notify);
 
   if (request->is_vpn)
@@ -853,6 +845,4 @@ shell_network_agent_class_init (ShellNetworkAgentClass *klass)
                                                  G_TYPE_NONE,
                                                  1, /* n_params */
                                                  G_TYPE_STRING);
-
-  g_type_class_add_private (klass, sizeof (ShellNetworkAgentPrivate));
 }

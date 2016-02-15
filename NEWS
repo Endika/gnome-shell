@@ -1,3 +1,92 @@
+3.19.4
+======
+* gdm: Do not allow bypassing disabled Sign In button [Michael; #746180]
+* Style week numbers in calendar [Jakub; #683245]
+* Misc. bug fixes [Christophe, Jakub, Rui; #759708, #760577, #760945]
+
+Contributors:
+  Michael Catanzaro, Marek Černocký, Christophe Fergeau, Rui Matos,
+  Jakub Steiner
+
+Translations:
+  Aurimas Černius [lt], Enrico Nicoletto [pt_BR], Andika Triwidada [id],
+  Mario Blättermann [de], Marek Černocký [cs], Kjartan Maraas [nb],
+  Muhammet Kara [tr], Stas Solovey [ru]
+
+3.19.3
+======
+* Fix thumbnail scaling in window switcher on HiDPI [Florian; #758676]
+* Update animated backgrounds on timezone changes [Florian; #758939]
+* loginDialog: Update user list on user changes [Michael; #758568]
+* Fix touch interaction on wayland [Carlos; #756748]
+
+Contributors:
+  Michael Catanzaro, Carlos Garnacho, Kalev Lember, Florian Müllner
+
+Translations:
+  Daniel Korostil [uk], Muhammet Kara [tr], Dušan Kazik [sk],
+  Baurzhan Muftakhidinov [kk], Marek Černocký [cs]
+
+3.19.2
+======
+* Make gnome-shell DBus activatable [Ray; #741666]
+* Fix browser plugin crash in Firefox [Carlos; #737932, #757940]
+* Optionally show battery percentage in system status area [Bastien; #735771]
+* Misc. bug fixes [Kalev, Florian, Bastien; #757418, #757668, #757779, #757816,
+  #745626, #758220]
+
+Contributors:
+  Michael Biebl, Michael Catanzaro, Piotr Drąg, Carlos Garcia Campos,
+  Kalev Lember, Florian Müllner, Bastien Nocera, Ray Strode
+
+Translations:
+  Pedro Albuquerque [pt], liushuyu [zh_CN], Yosef Or Boczko [he],
+  Jiri Grönroos [fi], Kjartan Maraas [nb], GNOME Translation Robot [gd],
+  Daniel Mustieles [es], Marek Černocký [cs], Kristjan SCHMIDT [eo],
+  Stas Solovey [ru]
+
+3.19.1
+======
+* Respect text-scaling factor under wayland [Owen; #756447]
+* Show the Bluetooth submenu when there were setup devices [Bastien; #723848]
+* Misc. bug fixes [Florian, Cosimo, Rui, Ray, Owen, Jakub, Bastien;
+  #756697, #756714, #756605, #754814, #738942, #756983, #756925,
+  #757011, #673235, #757150]
+
+Contributors:
+  Cosimo Cecchi, Rui Matos, Florian Müllner, Bastien Nocera, Jakub Steiner,
+  Ray Strode, Owen W. Taylor
+
+Translations:
+  Kjartan Maraas [nb], Khaled Hosny [ar], Balázs Meskó [hu],
+  Daniel Șerbănescu [ro], Marek Černocký [cs]
+
+3.18.1
+======
+* Fix screen freezes when a notification is pushed [Carlos; #755425]
+* Fix overzealous ellipsization in system status menu [Adel, Florian; #708472]
+* Hide app menu when disabled by setting [Florian; #745919]
+* Fix lightbox effect when animations are disabled [Rui; #755827]
+* Do not mark hotplug notifications as critical [Florian; #657923]
+* Fix icons getting cut off in dash [Florian; #745649]
+* Animate fullscreen/unfullscreen operations [Cosimo; #707248]
+* Misc. bug fixes [Florian, Owen; #748919, #674799, #754581]
+
+Contributors:
+  Emmanuele Bassi, Michael Catanzaro, Cosimo Cecchi, Matthias Clasen,
+  Adel Gadllah, Carlos Garnacho, Ekaterina Gerasimova, Rui Matos,
+  Florian Müllner, Owen W. Taylor
+
+Translations:
+  Марко Костић [sr], Милош Поповић [sr@latin], Khaled Hosny [ar],
+  Trần Ngọc Quân [vi], Petr Kovar [cs], Alexandre Franke [fr],
+  Fran Dieguez [gl], Anders Jonsson [sv], Piotr Drąg [pl], Dušan Kazik [sk],
+  Milo Casagrande [it], Changwoo Ryu [ko], Stas Solovey [ru],
+  Rafael Fontenelle [pt_BR], Tom Tryfonidis [el], Aurimas Černius [lt],
+  Seán de Búrca [ga], Christian Kirbach [de], Jiri Grönroos [fi],
+  Pedro Albuquerque [pt], Baurzhan Muftakhidinov [kk], Daniel Mustieles [es],
+  Marek Černocký [cs], Ask Hjorth Larsen [da], Inaki Larranaga Murgoitio [eu]
+
 3.18.0
 ======
 

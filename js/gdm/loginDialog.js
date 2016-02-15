@@ -96,7 +96,7 @@ const UserListItem = new Lang.Class({
     },
 
     _onDestroy: function() {
-        this._user.disconnect(this._userChangedId);
+        this.user.disconnect(this._userChangedId);
     },
 
     _onClicked: function() {
@@ -210,6 +210,10 @@ const UserList = new Lang.Class({
             return null;
 
         return item;
+    },
+
+    containsUser: function(user) {
+        return this._items[user.get_user_name()] != null;
     },
 
     addUser: function(user) {
@@ -924,11 +928,7 @@ const LoginDialog = new Lang.Class({
                            },
                            onUpdateScope: this,
                            onComplete: function() {
-                               let id = Mainloop.idle_add(Lang.bind(this, function() {
-                                   this._greeter.call_start_session_when_ready_sync(serviceName, true, null);
-                                   return GLib.SOURCE_REMOVE;
-                               }));
-                               GLib.Source.set_name_by_id(id, '[gnome-shell] this._greeter.call_start_session_when_ready_sync');
+                               this._greeter.call_start_session_when_ready_sync(serviceName, true, null);
                            },
                            onCompleteScope: this });
     },
@@ -1130,6 +1130,10 @@ const LoginDialog = new Lang.Class({
             this._userManager.disconnect(this._userRemovedId);
             this._userRemovedId = 0;
         }
+        if (this._userChangedId) {
+            this._userManager.disconnect(this._userChangedId);
+            this._userChangedId = 0;
+        }
         this._textureCache.disconnect(this._updateLogoTextureId);
         Main.layoutManager.disconnect(this._startupCompleteId);
         if (this._settings) {
@@ -1174,6 +1178,14 @@ const LoginDialog = new Lang.Class({
         this._userRemovedId = this._userManager.connect('user-removed',
                                                         Lang.bind(this, function(userManager, user) {
                                                             this._userList.removeUser(user);
+                                                        }));
+
+        this._userChangedId = this._userManager.connect('user-changed',
+                                                        Lang.bind(this, function(userManager, user) {
+                                                            if (this._userList.containsUser(user) && user.locked)
+                                                                this._userList.removeUser(user);
+                                                            else if (!this._userList.containsUser(user) && !user.locked)
+                                                                this._userList.addUser(user);
                                                         }));
 
         return GLib.SOURCE_REMOVE;

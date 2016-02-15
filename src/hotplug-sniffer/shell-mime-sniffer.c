@@ -43,8 +43,6 @@
 #define DIRECTORY_LOAD_ITEMS_PER_CALLBACK 100
 #define HIGH_SCORE_RATIO 0.10
 
-G_DEFINE_TYPE (ShellMimeSniffer, shell_mime_sniffer, G_TYPE_OBJECT);
-
 enum {
   PROP_FILE = 1,
   NUM_PROPERTIES
@@ -72,15 +70,25 @@ typedef struct {
   gint total_items;
 } DeepCountState;
 
+typedef struct _ShellMimeSnifferPrivate   ShellMimeSnifferPrivate;
+
+struct _ShellMimeSniffer
+{
+  GObject parent_instance;
+
+  ShellMimeSnifferPrivate *priv;
+};
+
 struct _ShellMimeSnifferPrivate {
   GFile *file;
 
   GCancellable *cancellable;
   guint watchdog_id;
 
-  GSimpleAsyncResult *async_result;
-  gchar **sniffed_mime;
+  GTask *task;
 };
+
+G_DEFINE_TYPE_WITH_PRIVATE (ShellMimeSniffer, shell_mime_sniffer, G_TYPE_OBJECT);
 
 static void deep_count_load (DeepCountState *state,
                              GFile *file);
@@ -179,6 +187,7 @@ prepare_async_result (DeepCountState *state)
   GArray *results;
   GPtrArray *sniffed_mime;
   SniffedResult result;
+  char **mimes;
 
   sniffed_mime = g_ptr_array_new ();
   results = g_array_new (TRUE, TRUE, sizeof (SniffedResult));
@@ -220,10 +229,10 @@ prepare_async_result (DeepCountState *state)
 
  out:
   g_ptr_array_add (sniffed_mime, NULL);
-  self->priv->sniffed_mime = (gchar **) g_ptr_array_free (sniffed_mime, FALSE);
+  mimes = (gchar **) g_ptr_array_free (sniffed_mime, FALSE);
 
   g_array_free (results, TRUE);
-  g_simple_async_result_complete_in_idle (self->priv->async_result);
+  g_task_return_pointer (self->priv->task, mimes, (GDestroyNotify)g_strfreev);
 }
 
 /* adapted from nautilus/libnautilus-private/nautilus-directory-async.c */
@@ -416,20 +425,17 @@ query_info_async_ready_cb (GObject *source,
 
   if (error != NULL)
     {
-      g_simple_async_result_take_error (self->priv->async_result,
-                                        error);
-      g_simple_async_result_complete_in_idle (self->priv->async_result);
+      g_task_return_error (self->priv->task, error);
 
       return;
     }
 
   if (g_file_info_get_file_type (info) != G_FILE_TYPE_DIRECTORY)
     {
-      g_simple_async_result_set_error (self->priv->async_result,
-                                       G_IO_ERROR,
-                                       G_IO_ERROR_NOT_DIRECTORY,
-                                       "Not a directory");
-      g_simple_async_result_complete_in_idle (self->priv->async_result);
+      g_task_return_new_error (self->priv->task,
+                               G_IO_ERROR,
+                               G_IO_ERROR_NOT_DIRECTORY,
+                               "Not a directory");
 
       return;
     }
@@ -475,7 +481,7 @@ shell_mime_sniffer_dispose (GObject *object)
 
   g_clear_object (&self->priv->file);
   g_clear_object (&self->priv->cancellable);
-  g_clear_object (&self->priv->async_result);
+  g_clear_object (&self->priv->task);
 
   if (self->priv->watchdog_id != 0)
     {
@@ -484,16 +490,6 @@ shell_mime_sniffer_dispose (GObject *object)
     }
 
   G_OBJECT_CLASS (shell_mime_sniffer_parent_class)->dispose (object);
-}
-
-static void
-shell_mime_sniffer_finalize (GObject *object)
-{
-  ShellMimeSniffer *self = SHELL_MIME_SNIFFER (object);
-
-  g_strfreev (self->priv->sniffed_mime);
-
-  G_OBJECT_CLASS (shell_mime_sniffer_parent_class)->finalize (object);
 }
 
 static void
@@ -539,7 +535,6 @@ shell_mime_sniffer_class_init (ShellMimeSnifferClass *klass)
 
   oclass = G_OBJECT_CLASS (klass);
   oclass->dispose = shell_mime_sniffer_dispose;
-  oclass->finalize = shell_mime_sniffer_finalize;
   oclass->get_property = shell_mime_sniffer_get_property;
   oclass->set_property = shell_mime_sniffer_set_property;
 
@@ -550,17 +545,13 @@ shell_mime_sniffer_class_init (ShellMimeSnifferClass *klass)
                          G_TYPE_FILE,
                          G_PARAM_READWRITE);
 
-  g_type_class_add_private (klass, sizeof (ShellMimeSnifferPrivate));
   g_object_class_install_properties (oclass, NUM_PROPERTIES, properties);
 }
 
 static void
 shell_mime_sniffer_init (ShellMimeSniffer *self)
 {
-  self->priv =
-    G_TYPE_INSTANCE_GET_PRIVATE (self,
-                                 SHELL_TYPE_MIME_SNIFFER,
-                                 ShellMimeSnifferPrivate);
+  self->priv = shell_mime_sniffer_get_instance_private (self);
   init_mimetypes ();
 }
 
@@ -578,14 +569,11 @@ shell_mime_sniffer_sniff_async (ShellMimeSniffer *self,
                                 gpointer user_data)
 {
   g_assert (self->priv->watchdog_id == 0);
-  g_assert (self->priv->async_result == NULL);
+  g_assert (self->priv->task == NULL);
 
-  self->priv->async_result = 
-    g_simple_async_result_new (G_OBJECT (self),
-                               callback, user_data,
-                               shell_mime_sniffer_sniff_finish);
-  
   self->priv->cancellable = g_cancellable_new ();
+  self->priv->task = g_task_new (self, self->priv->cancellable,
+                                 callback, user_data);
 
   self->priv->watchdog_id =
     g_timeout_add (WATCHDOG_TIMEOUT,
@@ -600,8 +588,5 @@ shell_mime_sniffer_sniff_finish (ShellMimeSniffer *self,
                                  GAsyncResult *res,
                                  GError **error)
 {
-  if (g_simple_async_result_propagate_error (self->priv->async_result, error))
-    return NULL;
-
-  return g_strdupv (self->priv->sniffed_mime);
+  return g_task_propagate_pointer (self->priv->task, error);
 }

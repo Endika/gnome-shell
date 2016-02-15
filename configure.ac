@@ -1,5 +1,5 @@
 AC_PREREQ(2.63)
-AC_INIT([gnome-shell],[3.18.0],[https://bugzilla.gnome.org/enter_bug.cgi?product=gnome-shell],[gnome-shell])
+AC_INIT([gnome-shell],[3.19.4],[https://bugzilla.gnome.org/enter_bug.cgi?product=gnome-shell],[gnome-shell])
 AX_IS_RELEASE([git-directory])
 
 AC_CONFIG_HEADERS([config.h])
@@ -77,7 +77,7 @@ AC_MSG_RESULT($enable_systemd)
 CLUTTER_MIN_VERSION=1.21.5
 GOBJECT_INTROSPECTION_MIN_VERSION=1.45.4
 GJS_MIN_VERSION=1.39.0
-MUTTER_MIN_VERSION=3.18.0
+MUTTER_MIN_VERSION=3.19.4
 GTK_MIN_VERSION=3.15.0
 GIO_MIN_VERSION=2.45.3
 LIBECAL_MIN_VERSION=3.5.3
@@ -117,9 +117,9 @@ PKG_CHECK_MODULES(GNOME_SHELL_JS, gio-2.0 gjs-internals-1.0 >= $GJS_MIN_VERSION)
 PKG_CHECK_MODULES(ST, clutter-1.0 gtk+-3.0 libcroco-0.6 >= 0.6.8 x11)
 PKG_CHECK_MODULES(SHELL_PERF_HELPER, gtk+-3.0 gio-2.0)
 PKG_CHECK_MODULES(SHELL_HOTPLUG_SNIFFER, gio-2.0 gdk-pixbuf-2.0)
-PKG_CHECK_MODULES(TRAY, gtk+-3.0)
+PKG_CHECK_MODULES(TRAY, clutter-1.0 gtk+-3.0)
 PKG_CHECK_MODULES(GVC, libpulse >= $PULSE_MIN_VERS libpulse-mainloop-glib gobject-2.0)
-PKG_CHECK_MODULES(DESKTOP_SCHEMAS, gsettings-desktop-schemas >= 3.13.1)
+PKG_CHECK_MODULES(DESKTOP_SCHEMAS, gsettings-desktop-schemas >= 3.19.2)
 
 AC_ARG_ENABLE(browser-plugin,
               [AS_HELP_STRING([--enable-browser-plugin],
